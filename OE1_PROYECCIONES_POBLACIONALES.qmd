@@ -8,7 +8,7 @@ editor: visual
 ```{r}
 ## Entorno de trabajo
 gc()
-setwd("~/Desktop/U_CHILE/MG_BIOESTADÍSTICA/TESIS/DATOS PÚBLICOS/PROYECCIONES_POBLACIONALES")
+setwd("~ INSERTE AQUÍ SU DIRECTORIO DE TRABAJO/ ALTAMENTE RECOMENDADO TENER UNA SOLA CARPETA PARA ESTE SCRIPT")
 ```
 
 # Librerias
@@ -43,7 +43,7 @@ PROYECCIONES <- PROYECCIONES %>%
         "5-9",      #(5-9]
         "10-14",    #(10-14]
         "15-19",    #(15-19] 
-        "20-24",   #(20-24]
+        "20-24",    #(20-24]
         "25-29",    #(25-29]
         "30-34",    #(30-34]
         "35-39",    #(35-39]
@@ -139,5 +139,5 @@ data5 <- PROYECCIONES_SS %>% group_by(Servicio_salud, EDAD_TERCIL, Sexo, AÑO) %
 
 ```{r}
 data6 <- PROYECCIONES_SS %>% group_by(CODIGO_COMUNA, AÑO) %>% summarise(POBLACION = sum(POBLACION))
-# save(data6, file = "pob_total_com_anio.RData") #11730 filas
+# save(data6, file = "pob_total_com_anio.RData")
 ```
