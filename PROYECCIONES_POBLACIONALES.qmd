@@ -1,0 +1,143 @@
+---
+title: "PROYECCIONES_POBLACIONALES"
+author: "CFP"
+format: html
+editor: visual
+---
+
+```{r}
+## Entorno de trabajo
+gc()
+setwd("~/Desktop/U_CHILE/MG_BIOESTADÍSTICA/TESIS/DATOS PÚBLICOS/PROYECCIONES_POBLACIONALES")
+```
+
+# Librerias
+
+```{r message=F}
+## librerias a usar
+library(readxl)
+library(tidyverse)
+library(kableExtra)
+library(readr)
+```
+
+# Carga proyecciones poblacionales
+
+```{r eval = F}
+## Carga de datos
+
+PROYECCIONES<- read_excel("[PAIS]estimaciones-y-proyecciones-2002-2035-comunas.xlsx")
+
+## Creacion variable quinquenio (Trabajar con la variable edad y función cut)
+PROYECCIONES <- PROYECCIONES %>%
+
+## categorización de variable edad  
+  mutate(
+    quinquenio = cut(Edad,
+      
+## número de cortes (breaks) que se hará (los breaks son siempre labels+1)
+      breaks = c(0,4,9,14,19,24,29,34,39,44,49,54,59,64,69,74,79, 100),
+## etiquetas de los cortes que se realizarán
+      labels = c(
+        "0-4",      #(0-4]
+        "5-9",      #(5-9]
+        "10-14",    #(10-14]
+        "15-19",    #(15-19] 
+        "20-24",   #(20-24]
+        "25-29",    #(25-29]
+        "30-34",    #(30-34]
+        "35-39",    #(35-39]
+        "40-44",    #(40-44]
+        "45-49",    #(45-49]
+        "50-54",    #(50-54]
+        "55-59",    #(55-59]
+        "60-64",    #(60- 64]
+        "65-69",    #(65-69]
+        "70-74",    #(70- 74]
+        "75-79",    #(75-79]
+        "80 y más"  #(80 y mas( 
+        ), include.lowest = TRUE), # inlcuir límite inferior
+
+## tercil de edad calculados  a partir de la edad de mortalidad en base de defunciones.
+    EDAD_TERCIL = cut(Edad,
+              breaks = c(0, 66, 77, 115),
+              labels = c("0-66", "67-77", "78 y más"),
+              include.lowest = TRUE)) %>% 
+  rename(CODIGO_COMUNA = Comuna,
+         Sexo = `Sexo\r\n1=Hombre\r\n2=Mujer`) %>% 
+  mutate(Sexo = factor(Sexo),
+         Sexo = fct_recode(Sexo,
+                           "Hombre" = "1", "Mujer" = "2" ))
+```
+
+# Carga de Servicios de salud
+
+```{r eval = F}
+# carga de datos de SS
+servicios_salud <- readr::read_csv("~/Desktop/U_CHILE/MG_BIOESTADÍSTICA/TESIS/DATOS PÚBLICOS/REGISTRO POBALCIONAL DE CÁNCER/ServSalud.csv") 
+
+## Unir proyecciones pob con Servicios de salud
+
+PROYECCIONES_SS <- inner_join(PROYECCIONES, servicios_salud, by = c("CODIGO_COMUNA")) %>% 
+  select(`Nombre Comuna`, CODIGO_COMUNA, Servicio_salud, Sexo, quinquenio, EDAD_TERCIL, starts_with("Poblacion")) %>% 
+  pivot_longer(
+    ## columnas a pasar a formato largo
+    cols = starts_with("Poblacion"), # aquellas columnas que empiezan con población
+    ## nueva columna creada a partir de cols
+    names_to = "AÑO",
+    ## nombre de la columa a crear a partir de los datos de las celdas
+    values_to = "POBLACION" ) %>%
+    ## remover string de Poblacion
+    mutate(AÑO = as.numeric(str_remove(AÑO, "Poblacion ")))
+# save(PROYECCIONES_SS, file = "proyecciones_pob_ss.RData")
+```
+
+# 1. Proyecciones por comunas
+
+```{r}
+load("proyecciones_pob_ss.RData")
+```
+
+```{r}
+data1 <- PROYECCIONES_SS %>%
+## agrupamiento por comunas
+  group_by(Servicio_salud, AÑO) %>%
+## resumir en una suma los valores de las columnas que inician con población
+  summarise(POBLACION = sum(POBLACION))
+# save(data1, file = "pob_total_ss.RData")
+```
+
+# 2. Proyecciones por sexo y año
+
+```{r}
+data2 <- PROYECCIONES_SS %>% group_by(Servicio_salud, Sexo, AÑO) %>% summarise(POBLACION = sum(POBLACION))
+# save(data2, file = "pob_total_SEXO_ss.RData")
+```
+
+# 3. Proyecciones por quinquenios (DEIS)
+
+```{r}
+data3 <- PROYECCIONES_SS %>% group_by(Servicio_salud, quinquenio, AÑO) %>% summarise(POBLACION = sum(POBLACION))
+# save(data3, file = "pob_total_QQ_ss.RData")
+```
+
+# 4. Proyecciones poblacionales por SS, quinquenio y sexo
+
+```{r}
+data4 <- PROYECCIONES_SS %>% group_by(Servicio_salud, quinquenio, Sexo, AÑO) %>% summarise(POBLACION = sum(POBLACION))
+# save(data4, file = "pob_total_QQ_SEXO_ss.RData")
+```
+
+# 5. Proyecciones poblacionales por SS, tercil y sexo
+
+```{r}
+data5 <- PROYECCIONES_SS %>% group_by(Servicio_salud, EDAD_TERCIL, Sexo, AÑO) %>% summarise(POBLACION = sum(POBLACION))
+# save(data5, file = "pob_total_tercil_SEXO_ss.RData")
+```
+
+# 6. Proyecciones poblacionales por comuna y año
+
+```{r}
+data6 <- PROYECCIONES_SS %>% group_by(CODIGO_COMUNA, AÑO) %>% summarise(POBLACION = sum(POBLACION))
+# save(data6, file = "pob_total_com_anio.RData") #11730 filas
+```

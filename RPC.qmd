@@ -1,0 +1,586 @@
+---
+title: "RPC"
+author: "Cristian Flores Peñailillo"
+format: html
+editor: visual
+---
+
+```{r message=F}
+gc()
+setwd("~/Desktop/U_CHILE/MG_BIOESTADÍSTICA/TESIS/DATOS PÚBLICOS/REGISTRO POBALCIONAL DE CÁNCER")
+```
+
+```{r message=F}
+## Librerias a utilizar
+library(haven)
+library(tidyverse)
+library(readxl)
+library(readr)
+library(kableExtra)
+library(scales)
+library(webshot)
+```
+
+# 1. Adm de datos
+
+```{r eval=F}
+##carga del registro poblacional de cáncer
+RPC <- read_sav("BBDD_RPC_1998-2019_ID.sav") %>% 
+  mutate(
+    Fecnac = case_when(
+      ## fechas en formato SPSS
+      grepl("^[0-9]+$", Fecnac) ~ as.character(as.Date(as.numeric(Fecnac), origin = "1899-12-30")),
+      ## fechas extremas que vienen codif con la fecga correcta
+      grepl("^[0-9]{2}-[0-9]{2}-[0-9]{4}$", Fecnac) ~ as.character(as.Date(Fecnac, format = "%d-%m-%Y")),
+      TRUE ~ NA_character_ ), Fecnac = as.Date(Fecnac) ) %>% 
+  
+  ## Selección de variables a utilizar en RPC
+  dplyr::select(
+    id_persona, RPC, regCom, Sexo, Edad, Quinquenios_edad,, Grupo_edad_1, Fecnac, Fecdiag, Año_diag, CIE10, Nombre_Cancer, Morfologia, Comportamiento, Base_diagnostico, VM, fecha_defuncion_act2020, Causa_defuncion )   %>%
+  
+  rename(CODIGO_COMUNA = regCom) %>% 
+  
+  ## Modificación del formato variables
+  mutate(
+    CODIGO_COMUNA = as.numeric(CODIGO_COMUNA),
+    Sexo = as.factor(Sexo),
+    Quinquenios_edad = as.factor(Quinquenios_edad),
+    Año_diag = as.numeric(Año_diag),
+    CIE10 = as.factor(CIE10),
+    Nombre_Cancer = as.factor(Nombre_Cancer),
+    Morfologia = as.factor(Morfologia),
+    Comportamiento = as.factor(Comportamiento),
+    Sexo = factor(Sexo),
+         Sexo = fct_recode(Sexo,
+                           "Hombre" = "1", "Mujer" = "2" ))   %>%
+  
+  ## Filtar por código CIE10 == C169 correspondiente al cáncer gástrico
+  filter(CIE10 == "C169") ## 5533 casos de CG
+```
+
+##Variable Servicio de Salud.
+
+```{r warning = F, eval=F}
+##carga de establecimientos de salud
+Establecimientos_salud <- read_excel("Establecimientos DEIS MINSAL 24-06-2024.xlsx") #establecimientos de salud al 24_06_2024, DEIS.
+
+SS <- Establecimientos_salud %>%
+  
+  dplyr::select(`Código Dependencia Jerárquica (SEREMI / Servicio de Salud)`,
+         `Nombre Dependencia Jerárquica (SEREMI / Servicio de Salud)`,
+         `Pertenencia al SNSS`,
+         `Código Región`,
+         `Nombre Región`,
+         `Código Comuna`, 
+         `Nombre Comuna`) %>%
+  
+  mutate(
+    `Nombre Dependencia Jerárquica (SEREMI / Servicio de Salud)` = as.factor(`Nombre Dependencia Jerárquica (SEREMI / Servicio de Salud)`),
+    `Pertenencia al SNSS` = as.factor(`Pertenencia al SNSS`), 
+    `Nombre Región` = as.factor(`Nombre Región`), 
+    `Nombre Comuna` = as.factor(`Nombre Comuna`),
+    `Código Región` = as.numeric(`Código Región`),
+    `regCom` = as.numeric(`Código Comuna`)
+    ) %>% 
+  
+  ## Filtar por servicio de salud
+  filter(grepl("servicio", `Nombre Dependencia Jerárquica (SEREMI / Servicio de Salud)`, ignore.case = TRUE)) %>% 
+  
+  ## Eliminar duplicados
+  distinct(`regCom`,
+           .keep_all = T)  %>% # Eliminar duplicados
+
+  ## #enombrar variables
+  rename(CODIGO_COMUNA = regCom,
+         Servicio_salud = `Nombre Dependencia Jerárquica (SEREMI / Servicio de Salud)`,
+         comuna = `Nombre Comuna`) %>%
+  
+  ## Selección de variables 
+  dplyr::select(Servicio_salud, CODIGO_COMUNA, comuna)
+
+# ServSalud <- write_csv(SS, "ServSalud.csv")
+# save(ServSalud, file = "ServSalud.RData")
+```
+
+```{r eval=F}
+master_base <- left_join(RPC, SS, by = "CODIGO_COMUNA")
+# save(master_base, file = "RPC_SS.RData")
+```
+
+# 2. Registros a utilizar
+
+```{r message=F}
+## carga del RPC
+load("RPC_SS.RData")
+RPC <- master_base
+
+## este df esd: SS-AÑO-POB
+load("~/Desktop/U_CHILE/MG_BIOESTADÍSTICA/TESIS/DATOS PÚBLICOS/PROYECCIONES_POBLACIONALES/pob_total_ss.RData")
+data1 <- data1 %>% filter(AÑO < 2020)
+
+## servicio salud
+load("ServSalud.RData")
+```
+
+# 3. Completitud RPC
+
+## 3.1. Completitud respecto a comunas por RPC
+
+```{r}
+## Paso 1. df con comunas presentes en cada año, a partir del RPC
+ss_rpc <- RPC %>%
+  
+  ## selección de variables
+  dplyr::select(Año_diag, CODIGO_COMUNA) %>%
+  
+  #eliminar duplicados
+  distinct()
+
+###################################################
+
+## 2. Creación del objeto completitud: union entre ServSalud y las comunas presentes en el RPC.
+completitud <- left_join(ServSalud, ss_rpc, by = "CODIGO_COMUNA") %>% 
+  
+## 3. Creación de la variable binaria "presenta" en completitud 
+  mutate(presenta = ifelse(is.na(Año_diag), 0, 1))
+
+###################################################
+
+## 4. btención el total de comunas únicas por Servicio de Salud.
+total_comunas_por_SS <- ServSalud %>%
+  
+  ## agrupar en el df ServSalud por la variable Servicio_salud
+  group_by(Servicio_salud) %>%
+  
+  ## resumir el total de comunas contando los valores unicos con n_distinct en la variable "Nombre Comuna
+  summarise(total_comunas = n_distinct(`comuna`, 
+                                       na.rm = TRUE)) %>%
+  
+  ## desagrupar el resultado, en caso de que se quieran hacer análisis posteriores.
+  ungroup()
+
+###################################################
+
+## 5. Obtención del número de comunas presentes en cada año (del RPC) por Servicio de Salud
+comunas_por_año <- completitud %>%
+  
+  ## Agrupar por año y servicio de salud
+  group_by(Año_diag, Servicio_salud) %>%
+  
+  ## contar las comunas unicas presentes
+  summarise(presenta = sum(presenta)) %>%
+  
+  ## desagrupar
+  ungroup()
+
+###################################################
+
+## 6. Cálculo el porcentaje de comunas presentes por año en cada Servicio de Salud
+comunas_por_año <- comunas_por_año %>%
+  
+  left_join(total_comunas_por_SS, by = "Servicio_salud") %>%
+  
+  ## creación de la variable de porcentaje de cobertura.
+  mutate(porcentaje = round((presenta / total_comunas) * 100,2) ) %>% 
+  
+  filter(!is.na(Año_diag))
+
+rm(total_comunas_por_SS, ss_rpc)
+```
+
+```{r fig.width=10, fig.height=8}
+## Graficar la completitud de los RPC
+completitud.plot <- ggplot(comunas_por_año,     ## df de donde se obtienen los datos
+  
+      ## estéticas del gráfico
+       aes(x = factor(Año_diag),                ## eje x: variable factor Año_diag
+           y = porcentaje,                      ## eje y: variable porcentaje
+           fill = factor(Año_diag))) +          ## relleno se dará color según el año
+  
+      ## geom_bar (gráfico de barras)
+  geom_bar(stat = "identity",                   ## usar valores proporcionados para la eje Y
+           position = "dodge") +                ## colocar barrar una al lado de la otra
+  
+       ## serie de facetas a graficar 
+  facet_wrap(~ Servicio_salud,                  ## La figura queda con tantas facetas como SS existan  
+             scales = "fixed",                  ## las facetas compartirán el mismo rango para los ejes
+             ncol = 1) +                        ## Organizar facteas en una sola columna
+      
+       ## tema del plot
+  theme_minimal() +
+  
+      ## rango de valores que puede tomar el eje y
+  ylim(0, 100) + 
+  
+      ## etiquetas del gráfico
+  labs(title = "Porcentaje de comunas presentes por SS en el RPC, en cada año",    ## título del gráfico
+       x = "Año",                                                        ## título eje x
+       y = "Porcentaje de completitud (comunas)" )+            ## título eje y
+  
+   theme(legend.position = "none")          ## quitar la leyenda
+                                                      
+completitud.plot
+# ggsave("completitud.jpeg", completitud.plot, width = 11, height = 7, dpi = 300)
+```
+
+## 3.2. Cobertura respecto a población del SS en el RPC
+
+```{r}
+## Carga de datos de poblaciones por comuna y año
+load("~/Desktop/U_CHILE/MG_BIOESTADÍSTICA/TESIS/DATOS PÚBLICOS/PROYECCIONES_POBLACIONALES/pob_total_com_anio.RData")
+```
+
+```{r}
+## calculo de población pr comunas de SS
+
+## 1. Identificar comunas presentes en cada año por Servicio de Salud, del RPC
+comunas_por_año_2 <- completitud %>%
+  
+  ## Consideramos solo comunas presentes
+  filter(presenta == 1) %>%  
+
+  rename(AÑO = Año_diag) 
+
+###################################################
+
+## 2. Poblacion por año en las comunas por SS, presentes en el RPC
+ 
+ ## unir df de comunas por año y la pob.cobertura
+comunas_año_SS <- left_join(comunas_por_año_2, data6 , by = c("CODIGO_COMUNA", "AÑO")) %>% 
+  
+  group_by(Servicio_salud, AÑO) %>%
+  
+  summarise(POBLACION_RPC = sum(POBLACION))
+
+###################################################
+
+ ## 3. unir las comunas de cada SS con las poblaciones por comuna
+completitud2 <- left_join(comunas_año_SS, data1, by = c("Servicio_salud", "AÑO")) %>% 
+  mutate(cobertura = (POBLACION_RPC/POBLACION)*100)
+```
+
+```{r fig.width=10, fig.height=8}
+cobertura.plot <- ggplot(completitud2, # df de donde se obtienen los datos
+                               
+      ## aestheticas del gráfico
+       aes(x = factor(AÑO),                ## eje x: variable factor Año_diag
+           y = cobertura,                      ## eje y: variable porcentaje
+           fill = factor(AÑO))) +          ## relleno se dará color según el año
+  
+      ## Grafico de barras
+  geom_bar(stat = "identity",                   ## usar valores proporcionados para la columna Y
+           position = "dodge") +                ## colocar barrar una al lado de la otra
+  
+       ## Facetas a graficar 
+  facet_wrap(~ Servicio_salud,                  ## La figura final quedara con tantas facetas como SS existan  
+             scales = "fixed",                  ## todos las facetas compartirar el mismo rango para los ejes x e y.
+             ncol = 1) +                        ## Organizar facteas en una sola columna.
+  
+      ## tema del plot
+  theme_minimal() +
+  
+      ## rango de valores que puede tomar el eje y
+  ylim(0, 100) + 
+  
+      ## etiquetas del gráficos
+  labs(title = "Porcentaje de población abarcada por SS en el RPC, en cada año",    ## título del gráfico
+       x = "Año",                                                                   ## título eje x
+       y = "Porcentaje de cobertura (personas)")     +                              ## título eje y
+   
+  theme(legend.position = "none")  ## quitar la leyenda
+                                                       
+cobertura.plot
+# ggsave("cobertura.jpeg", cobertura.plot, width = 11, height = 7, dpi = 300)
+```
+
+## 3.3. Coberturas País
+
+```{r}
+## POBLACION
+pob.pais <- data1 %>%
+  group_by(AÑO) %>%
+  summarise(POBLACION = sum(POBLACION, na.rm = TRUE))
+
+pob.rpc <- comunas_año_SS %>%
+  group_by(AÑO) %>%
+  summarise(POBLACION_RPC = sum(POBLACION_RPC, na.rm = TRUE))
+
+pob.pais <- left_join(pob.pais, pob.rpc, by = "AÑO") %>%
+  mutate(PROPORCION = POBLACION_RPC / POBLACION,
+         PORCENTAJE = PROPORCION * 100)
+
+## COMUNAS
+comunas.pais <- comunas_por_año %>%
+  rename(AÑO = Año_diag) %>% 
+  group_by(AÑO) %>%
+  summarise(COMUNAS_RPC = sum(presenta, na.rm = TRUE),
+            TOTAL_COMUNA = 345)
+ 
+pob.pais <- left_join(pob.pais, comunas.pais, by = "AÑO") %>%
+  mutate(PROPORCION_COMUNA = COMUNAS_RPC / TOTAL_COMUNA,
+         PORCENTAJE_COMUNA = PROPORCION_COMUNA * 100)
+```
+
+```{r fig.height=5, fig.width=8}
+cobertura.pais <- ggplot(pob.pais, aes(x = AÑO)) +
+  
+  # Área bajo la curva (cobertura poblacional)
+  geom_area(aes(y = PROPORCION * 100), fill = "steelblue", alpha = 0.3) +
+
+  # Línea principal
+  geom_line(aes(y = PROPORCION * 100), color = "maroon", linewidth = 1.2) +
+  geom_point(aes(y = PROPORCION * 100), color = "maroon", size = 2) +
+
+  # Barras: % de comunas con registro
+  geom_col(aes(y = (COMUNAS_RPC / 345) * 100), 
+           fill = "black", alpha = 0.5, width = 0.1) +
+
+  # Etiquetas de número real de comunas sobre cada barra
+  geom_text(
+    aes(
+      y = (COMUNAS_RPC / 345) * 100 + 7,  # un poco encima de la barra
+      label = COMUNAS_RPC ),
+    color = "black", size = 3.5 ) +
+
+  # Escala Y como porcentaje (0 a 100%)
+  scale_y_continuous(
+    name = " Porcentaje de Cobertura",
+    limits = c(0, 100),
+    breaks = seq(0, 100, 10) ) +
+  
+  scale_x_continuous(breaks = pob.pais$AÑO) +
+  labs(
+    x = "Año",
+    title = "Porcentaje de Cobertura poblacional y comunal de RPCs, en el tiempo",
+    caption = "Número comunas indicado sobre cada barra (máx: 345)" ) +
+  
+  theme_minimal()+
+  
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) 
+
+cobertura.pais
+# ggsave(filename = "cobertura.pais.jpeg", plot = cobertura.pais, width = 8, height = 5,  dpi = 300)
+```
+
+# 4. Tasas de incidencia
+
+### 4.1. Casos por año y SS
+
+```{r}
+## incidencias brutas por año y servicio de salud
+inc_1 <- RPC %>%
+  group_by(Año_diag, Servicio_salud) %>%
+  summarise(incidencias = n()) %>%
+  rename(AÑO = Año_diag) %>% 
+  left_join(data1, by = c("Servicio_salud", "AÑO")) %>%
+  mutate(tasa = round( (incidencias / POBLACION) * 100000,2) ) %>%
+  na.omit()
+```
+
+### 4.2. Graficos incidencias
+
+```{r fig.width=10, fig.height=15}
+incidencias <- ggplot(inc_1,            ## dataframe para graficar
+       aes(x = AÑO,                     ## eje x : variable AÑO
+           y = tasa,                    ## eje y: varibale tasa
+           group = Servicio_salud,      ## agrupar por la variables Servicio_salud
+           color = Servicio_salud)) +   ## color segun Servicio_salud
+    
+  geom_smooth(method = "lm",            ## línea de regresión
+              se = F,                   ## sin errores
+              linetype = "solid",       ## tipo: solida
+              colour = "#8B8878",
+              alpha = 0.05,
+              linewidth = 0.6) +        ## tamaño
+  
+  geom_line() +                         ## Línea de incidencia por año
+  
+  geom_point() +                        ## Puntos para visualizar las tasas
+  
+  facet_wrap(~ Servicio_salud,          ## tantas facetas como SS
+             scales = "free_y",         ## límites del eje Y
+             ncol = 1) +                ## Un gráfico por servicio de salud
+  
+  scale_x_continuous(breaks = unique(inc_1$AÑO)) + ## eje X separado por AÑO
+  
+  ## tema del gráfico
+  theme_minimal() +
+  
+  theme(legend.position = "none",       ## Oculta la leyenda porque cada faceta es un servicio
+    panel.grid.major.y = element_line(color = "gray80"),  
+    panel.grid.minor.y = element_line(color = "gray90"),  
+    axis.line.y = element_line(color = "black")) +   ## línea del eje y
+  labs(title = "Tasas de incidencia de CG por Servicio de Salud", x = "Año", y = "Tasa de incidencia")
+
+incidencias
+# ggsave(filename = "incidencias_ss.jpeg", plot = incidencias, width = 10, height = 15, dpi = 300)
+```
+
+#5. Pirámides demográficas de tasas de incidencia por quinquenio y sexo.
+
+## 5.1. Incidencias por quinquenio, sexo, SS y AÑO
+
+```{r}
+## Paso 1: incidencias por por quinquenio, sexo en cada SS y año.
+
+inc.2 <- RPC %>%
+  ## Selección de RPC las variable necesarias
+dplyr::select(Servicio_salud, Año_diag, Quinquenios_edad, Sexo) %>%
+  
+  ## renombrar la variable Año_diag como AÑO
+  rename(AÑO = Año_diag) %>%
+  
+  ## obtener cuantas incidencias hay por año, SS, sexo y quinquenio agrupando por los niveles de estas variables
+  group_by(Servicio_salud, Quinquenios_edad, Sexo, AÑO) %>%
+  
+  ## contar cuantos hay por grupo
+  summarise(incidencias = n())
+
+###################################################
+
+## Paso 2: renombrar los niveles de la variable quinquenio
+
+## Objeto que especcifica los niveles de los quinquenios
+quinquenios <- c("0-4",      ## = 1
+                 "5-9",      ## = 2
+                 "10-14",    ## = 3
+                 "15-19",    ## = 4
+                 "20-24",   ## = 5
+                 "25-29",    ## = 6
+                 "30-34",    ## = 7
+                 "35-39",    ## = 8
+                 "40-44",    ## = 9
+                 "45-49",    ## = 10
+                 "50-54",    ## = 11
+                 "55-59",    ## = 12
+                 "60-64",    ## = 13
+                 "65-69",    ## = 14
+                 "70-74",    ## = 15
+                 "75-79",    ## = 16
+                 "80 y más") ## = 17
+
+## convertir los niveles originales de Quinquenio_edad de inc.2 en los del objeto llamado quinquenio
+levels(inc.2$Quinquenios_edad) <- quinquenios
+
+###################################################
+
+## Paso 3: poblaciones por sexo, quinquenio, año y SS.
+
+load("~/Desktop/U_CHILE/MG_BIOESTADÍSTICA/TESIS/DATOS PÚBLICOS/PROYECCIONES_POBLACIONALES/pob_total_QQ_SEXO_ss.RData")
+pob.quinquenio <- data4 %>% 
+  rename(Quinquenios_edad = quinquenio)
+
+
+###################################################
+
+## Paso 4: unir los df de pob.quinquenio con el de incidencias.
+inc.2 <- left_join(inc.2, 
+                   pob.quinquenio, 
+                   by = c("Servicio_salud","Sexo","Quinquenios_edad", "AÑO"))
+
+###################################################
+
+## Paso 5: creación de la tasa
+inc.2 <- inc.2 %>%
+  mutate(tasa = round((incidencias / POBLACION)* 100000,2), ## 100000 = 1e5
+         Servicio_salud = as.factor(Servicio_salud),
+         AÑO = as.factor(AÑO)) %>%
+  drop_na(tasa) %>% 
+  mutate(tasa_modificada = ifelse(Sexo == "Hombre", 
+                                          -tasa, 
+                                           tasa) )
+```
+
+## 5.2. Gráficos de pirámides poblacionales
+
+```{r eval=F}
+# Listar todos los servicios de salud y años únicos
+servicios <- unique(inc.2$Servicio_salud)
+años <- unique(inc.2$AÑO)
+
+# Crear una carpeta  en la ruta de trabajo para guardar los gráficos generados
+dir.create("graficos_piramides", showWarnings = F)
+
+
+## creación de gráfico con bucle for anidado para cada combinación de servicio y año
+
+for (servicio in servicios) {      ## para cada servicio en el objeto servicios
+  for (año in años) {              ## y para cada año en el obsejto años
+    
+    ## Filtrar los datos para el servicio y año específicos
+       # en cada iteración de los bucles, datos_filtrados es un subconjunto filtrado por la combinación de Servicio_alud y AÑO de la iteración que este corriendo en el momento
+       # subset crea un nuevo df que contienen las condiciones especificadas, es decir filtra los SS y AÑO que no correspondan el servicio y año de la iteracion que está corriendo.
+    
+    datos_filtrados <- subset(inc.2, ## elsu
+                              Servicio_salud == servicio & 
+                                AÑO == año)
+    
+    # Crear el gráfico
+    p <- ggplot(data = datos_filtrados) +
+      
+      geom_bar(aes(x = Quinquenios_edad, 
+                   y = tasa_modificada, 
+                   fill = Sexo), 
+               stat = "identity") +
+      
+      scale_y_continuous(breaks = seq(-900, 1000, 20),
+                         labels = abs(seq(-900, 1000, 20))) +
+      
+      ## voltear los ejer
+      coord_flip() +
+      
+      ## título eje y
+      ylab("Tasa de incidencia de CG por 100.000 habitantes") +
+      
+      ## titulo eje x
+      xlab("Quinquenios de edad") +
+      
+      ## titulo del gráfico
+      ## revisar la sintaxis de paste() para entender el código.
+      # paste(x1, x2, x3..., sep = " algo ") por default sep = " " separa por un espacio
+      ggtitle(paste("Piramide Poblacional:", 
+                    servicio,
+                    "-", # este guión se utiliza para separar el nombre del servicio y el año en el título del gráfico
+                    año)) + 
+      
+      ## tema del grpafico
+      theme_minimal() +
+      
+      ## especificaciones del tema
+      theme(axis.title = element_text(size = 10, 
+                                      face = "bold"))
+    
+    ## Guardar los gráficos en un archivo
+    ggsave(paste0("graficos_piramides/", 
+                  servicio, "_", 
+                  año,
+                  ".jpeg"), 
+           plot = p,    ## el grafico p que está iterando
+           height = 8,  ## altura del grpafico
+           width = 17)  ## anchura del grpafico
+  }
+}
+```
+
+```{r eval=F}
+## exportar incidencias + quinquenio
+
+incidencias_oe2 <- inc.2 %>%
+dplyr::select(Servicio_salud, AÑO, Quinquenios_edad, Sexo, incidencias) %>%
+  rename(QUINQUENIO = Quinquenios_edad,
+         SEXO = Sexo) %>%
+  write_csv("incidencias_oe2.csv")
+```
+
+```{r}
+## exportat incidencias + tercil (de defunción)
+
+incidencias_tercil_oe2 <- RPC %>% 
+  mutate(EDAD_TERCIL = cut (Edad, breaks = c(0 , 66, 77, 115), labels = c("0-66", "67-77", "78 y más"))) %>% 
+  rename(QUINQUENIO = Quinquenios_edad) %>% 
+  group_by(Servicio_salud, Sexo, Año_diag, EDAD_TERCIL) %>% 
+  summarise(incidencias = n())
+
+# save(incidencias_tercil_oe2, file = "incidencias_tercil_oe2.RData")
+```
+
