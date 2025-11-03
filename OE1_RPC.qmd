@@ -7,7 +7,7 @@ editor: visual
 
 ```{r message=F}
 gc()
-setwd("~/Desktop/U_CHILE/MG_BIOESTADÍSTICA/TESIS/DATOS PÚBLICOS/REGISTRO POBALCIONAL DE CÁNCER")
+setwd("~INSERTE AQUÍ SU DIRECTORIO DE TRABAJO/ALTAMENTE RECOMANDADO TENER UNA SOLA CARPETA PARA ESTE SCRIPT")
 ```
 
 ```{r message=F}
@@ -115,7 +115,7 @@ load("RPC_SS.RData")
 RPC <- master_base
 
 ## este df esd: SS-AÑO-POB
-load("~/Desktop/U_CHILE/MG_BIOESTADÍSTICA/TESIS/DATOS PÚBLICOS/PROYECCIONES_POBLACIONALES/pob_total_ss.RData")
+load("~/Desktop/U_CHILE/MG_BIOESTADÍSTICA/TESIS/DATOS PÚBLICOS/PROYECCIONES_POBLACIONALES/pob_total_ss.RData") #ESTE ARCHIVO SE CREA EN EL SCRPTI DE PROYECCIONES POBLACIONALES
 data1 <- data1 %>% filter(AÑO < 2020)
 
 ## servicio salud
@@ -227,7 +227,7 @@ completitud.plot
 
 ```{r}
 ## Carga de datos de poblaciones por comuna y año
-load("~/Desktop/U_CHILE/MG_BIOESTADÍSTICA/TESIS/DATOS PÚBLICOS/PROYECCIONES_POBLACIONALES/pob_total_com_anio.RData")
+load("~/Desktop/U_CHILE/MG_BIOESTADÍSTICA/TESIS/DATOS PÚBLICOS/PROYECCIONES_POBLACIONALES/pob_total_com_anio.RData") ## ESTE ARCHIVO DE CREA EN EL SCRIPT DE PROYECCIONES POBLACIONALES
 ```
 
 ```{r}
@@ -264,7 +264,7 @@ cobertura.plot <- ggplot(completitud2, # df de donde se obtienen los datos
                                
       ## aestheticas del gráfico
        aes(x = factor(AÑO),                ## eje x: variable factor Año_diag
-           y = cobertura,                      ## eje y: variable porcentaje
+           y = cobertura,                  ## eje y: variable porcentaje
            fill = factor(AÑO))) +          ## relleno se dará color según el año
   
       ## Grafico de barras
@@ -445,7 +445,7 @@ quinquenios <- c("0-4",      ## = 1
                  "5-9",      ## = 2
                  "10-14",    ## = 3
                  "15-19",    ## = 4
-                 "20-24",   ## = 5
+                 "20-24",    ## = 5
                  "25-29",    ## = 6
                  "30-34",    ## = 7
                  "35-39",    ## = 8
@@ -466,7 +466,7 @@ levels(inc.2$Quinquenios_edad) <- quinquenios
 
 ## Paso 3: poblaciones por sexo, quinquenio, año y SS.
 
-load("~/Desktop/U_CHILE/MG_BIOESTADÍSTICA/TESIS/DATOS PÚBLICOS/PROYECCIONES_POBLACIONALES/pob_total_QQ_SEXO_ss.RData")
+load("~/Desktop/U_CHILE/MG_BIOESTADÍSTICA/TESIS/DATOS PÚBLICOS/PROYECCIONES_POBLACIONALES/pob_total_QQ_SEXO_ss.RData") ## ESTE ARCHIVO SE CREA EN EL SCRIPT DE PROYECCIONES POBLACIONALES
 pob.quinquenio <- data4 %>% 
   rename(Quinquenios_edad = quinquenio)
 
@@ -499,7 +499,7 @@ servicios <- unique(inc.2$Servicio_salud)
 años <- unique(inc.2$AÑO)
 
 # Crear una carpeta  en la ruta de trabajo para guardar los gráficos generados
-dir.create("graficos_piramides", showWarnings = F)
+dir.create("graficos_piramides", showWarnings = F) ##ESTA CARPETA SE CREARÁ EN LA CARPETA INDICADA EN setwd() y almacenará los gráficos de pirámides de incidecnias generados en el bucle.
 
 
 ## creación de gráfico con bucle for anidado para cada combinación de servicio y año
@@ -569,7 +569,7 @@ incidencias_oe2 <- inc.2 %>%
 dplyr::select(Servicio_salud, AÑO, Quinquenios_edad, Sexo, incidencias) %>%
   rename(QUINQUENIO = Quinquenios_edad,
          SEXO = Sexo) %>%
-  write_csv("incidencias_oe2.csv")
+  write_csv("incidencias_oe2.csv") ## datos a usar en OE2, con quinquenios
 ```
 
 ```{r}
@@ -581,6 +581,6 @@ incidencias_tercil_oe2 <- RPC %>%
   group_by(Servicio_salud, Sexo, Año_diag, EDAD_TERCIL) %>% 
   summarise(incidencias = n())
 
-# save(incidencias_tercil_oe2, file = "incidencias_tercil_oe2.RData")
+# save(incidencias_tercil_oe2, file = "incidencias_tercil_oe2.RData") ## datos a usar en OE2, con terciles
 ```
 
