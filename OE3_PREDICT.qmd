@@ -1,0 +1,3319 @@
+---
+title: "OE3_PREDICT"
+author: "CFP"
+format: html
+editor: visual
+---
+
+```{r}
+gc()
+setwd("~/Desktop/U_CHILE/MG_BIOESTADÍSTICA/TESIS/DATOS PÚBLICOS/OE3")
+```
+
+# Librerias
+
+```{r}
+## librerias
+library(tidyverse)    ## adm de datos
+library(tscount)      ## series de tiempo de conteo
+library(glm2)         ## glm Poisson
+library(MASS)         ## glm bn
+library(purrr)        ## iteraciones con map
+library(AER)          ## eval sobredispersión
+```
+
+# Administración de datos
+
+```{r}
+## datos
+load("~/Desktop/U_CHILE/MG_BIOESTADÍSTICA/TESIS/DATOS PÚBLICOS/OE2/estimaciones_OE2.RData")   ## datos incidencias
+load("pob_total_quinquenios_ss.RData")   ## poblaciones
+
+pob.quinquenio <- pob.quinquenio %>%
+  rename(SEXO = Sexo) %>% 
+  filter(!Quinquenios_edad %in% c("0-4", "5-9" ,"10-14", "15-19")) %>%
+  
+  ## recodificar sexo
+  mutate(SEXO = fct_recode(SEXO,
+    "Hombre" = "1",
+    "Mujer" = "2")) %>%
+  
+  ## renombrar la variables quinquenio
+  rename(QUINQUENIO = Quinquenios_edad) 
+```
+
+```{r}
+## para modleo minsal
+## unión de bases de datos.
+datos.completos <- left_join(estimaciones_OE2, pob.quinquenio, by = c("Servicio_salud", "AÑO", "SEXO", "QUINQUENIO")) %>%
+  ## filtro de predicho en casos donde existen predichos y observados simultáneamente, par dejar solo observados
+  group_by(AÑO, Servicio_salud, QUINQUENIO, SEXO) %>%
+  filter(!(tipo == "ESTIMADO" & any(tipo == "OBSERVADO"))) %>%
+  summarise(casos = sum(incidencias),
+            poblacion = sum(POBLACION),
+             ## de esta forma no se eliminan los años donde en algun grupo no hubieron decesos.
+            defunciones = sum(defunciones, na.rm = T)) %>% 
+   ## redondeo de casos.
+  mutate(casos_aprox = round(casos, digits = 0))
+```
+
+```{r eval = F}
+## Regiones zona norte: XV (tarapacá), I(arica), II(antof), III(atacama), IV(coquimbo)
+## SS zona norte: SS tarapaca, SS arica, SS antof, SS atacama, SS coquimbo
+
+## Regiones zona centro: V(valpo), XIII(met), VI(Ohi), VII(maule), VIII(biobio) + XVI(ñuble)
+## SS zona centro:SS aconcagua, SS valpo-san antonio, SS viña-quillota, SS arauco, SS biobio, SS concepcion,SS talcahuano, SS lib Ohiggins, SS maule, SS met central SS met norte, SS met occidente, SS met oriente, SS met sur, SS met sur oriente+ SS ñuble
+
+## Regiones zona sur: IX(araucania), X(los lagos), XIV(Rios), XI(Aysen), XII(magallanes)
+## SS zona sur: SS araucania norte, SS araucania sur, SS chiloe, SS reloncaví, SS osorno, SS los ríos, SS aysen, SS magallanes 
+```
+
+```{r eval = F}
+## adm datos incidencias
+datos.completos <- datos.completos %>%
+  mutate(ZONA = case_when(
+    
+    # zona norte
+    Servicio_salud %in% c("Servicio de Salud Arica y Parinacota", "Servicio de Salud Tarapacá", "Servicio de Salud Antofagasta", "Servicio de Salud Atacama", "Servicio de Salud Coquimbo") ~ "norte",
+    
+    # zona centro
+    Servicio_salud %in% c("Servicio de Salud Aconcagua", "Servicio de Salud Viña del Mar Quillota", "Servicio de Salud Valparaíso San Antonio", "Servicio de Salud Metropolitano Central", "Servicio de Salud Metropolitano Norte", "Servicio de Salud Metropolitano Occidente", "Servicio de Salud Metropolitano Oriente", "Servicio de Salud Metropolitano Sur", "Servicio de Salud Metropolitano Sur Oriente", "Servicio de Salud Del Libertador B.O'Higgins", "Servicio de Salud Del Maule", "Servicio de Salud Arauco", "Servicio de Salud Biobío", "Servicio de Salud Concepción", "Servicio de Salud Talcahuano", "Servicio de Salud Ñuble") ~ "centro",
+    
+    # zona sur
+    Servicio_salud %in% c("Servicio de Salud Araucanía Norte", "Servicio de Salud Araucanía Sur", "Servicio de Salud Del Reloncaví", "Servicio de Salud Los Rios", "Servicio de Salud Magallanes", "Servicio de Salud Osorno", "Servicio de Salud Aysén", "Servicio de Salud Chiloé") ~ "sur",
+    
+    # si no es ninguna de las anteriores
+    TRUE ~ NA_character_
+  
+  ## es importente usar %in% y NO ==. el primero verifica que en cada fila del df pertenece al conjunto indicado; mientras que el seguno compara elemento por elemento ambos vectores, si los vectores no son del mismo largo se repite el vector más corto.
+  ))
+
+###################################################################
+
+## adm datos quinquenios
+pob.quinquenio <- pob.quinquenio %>%
+  ## eliminar quinquenios de edad que no se consideran
+  filter(!QUINQUENIO %in% c("0-4", "5-9" ,"10-14", "15-19")) %>%
+  
+  ## recodificar sexo
+  mutate(SEXO = fct_recode(SEXO,
+    "Hombre" = "1",
+    "Mujer" = "2")) %>%
+  
+  ## renombrar la variables quinquenio
+  mutate(ZONA = case_when(
+    
+    # zona norte
+    Servicio_salud %in% c("Servicio de Salud Arica y Parinacota", "Servicio de Salud Tarapacá", "Servicio de Salud Antofagasta", "Servicio de Salud Atacama", "Servicio de Salud Coquimbo") ~ "norte",
+    
+    # zona centro
+    Servicio_salud %in% c("Servicio de Salud Aconcagua", "Servicio de Salud Viña del Mar Quillota", "Servicio de Salud Valparaíso San Antonio", "Servicio de Salud Metropolitano Central", "Servicio de Salud Metropolitano Norte", "Servicio de Salud Metropolitano Occidente", "Servicio de Salud Metropolitano Oriente", "Servicio de Salud Metropolitano Sur", "Servicio de Salud Metropolitano Sur Oriente", "Servicio de Salud Del Libertador B.O'Higgins", "Servicio de Salud Del Maule", "Servicio de Salud Arauco", "Servicio de Salud Biobío", "Servicio de Salud Concepción", "Servicio de Salud Talcahuano", "Servicio de Salud Ñuble") ~ "centro",
+    
+    # zona sur
+    Servicio_salud %in% c("Servicio de Salud Araucanía Norte", "Servicio de Salud Araucanía Sur", "Servicio de Salud Del Reloncaví", "Servicio de Salud Los Rios", "Servicio de Salud Magallanes", "Servicio de Salud Osorno", "Servicio de Salud Aysén", "Servicio de Salud Chiloé") ~ "sur",
+    
+    # si no es ninguna de las anteriores
+    TRUE ~ NA_character_
+  ))
+```
+
+# Metodología MINSAL
+
+Notar que ya tengo los casos por año.
+
+```{r eval = F}
+## unión de bases de datos.
+datos.completos.t <- left_join(datos.completos, pob.quinquenio, by = c("Servicio_salud", "AÑO", "SEXO", "QUINQUENIO", "ZONA")) %>%
+   #mutate(ZONA = as.factor(ZONA)) %>%
+  ## filtro de predicho en casos donde existen predichos y observados simultáneamente, par dejar solo observados
+  group_by(AÑO, Servicio_salud, QUINQUENIO, SEXO, ZONA) %>%
+  filter(!(tipo == "Predicho" & any(tipo == "Observado"))) %>%
+  summarise(casos = sum(incidencias),
+            poblacion = sum(POBLACION),
+             ## de esta forma no se eliminan los años donde en algun grupo no hubieron decesos.
+            defunciones = sum(Defunciones, na.rm = T)) %>% 
+   ## redondeo de casos.
+  mutate(casos_aprox = round(casos, digits = 0))
+```
+
+## Modelos por zona
+
+### modelo zona norte
+
+```{r eval = F}
+## modelo Poisson mujer
+mpn_p_m <- glm2::glm2(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  family = "poisson",
+  ## subgrupo de la zona correspondiente
+  data = subset(datos.completos.t, ZONA == "norte" & SEXO == "Mujer"))
+summary(mpn_p_m)
+
+## modelo bin-neg mujer
+mpn_bn_m <- MASS::glm.nb(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  data =subset(datos.completos.t, ZONA == "norte" & SEXO == "Mujer"))
+summary(mpn_bn_m)
+
+
+## comparación de modelos mujer
+
+### test de razon de verosimilitudes
+pchisq(2 * (logLik(mpn_bn_m) - logLik(mpn_p_m)), df = 1, lower.tail = FALSE)
+## loglik es de -2230.58 -> no hay evidencia de que el bin neg sea mejor que el poisson
+## nota: recordar que en bn la parametrización es V[Y] = µ + µ^2/theta (theta es el parametro de sobredispersión); por eso cuando theta es muy grande mu/theta ≈ 0, entonces V[Y] = µ
+## parametro de sobre dispersión = 39972.02
+
+### por AIC y BIC
+c(BN_AIC=AIC(mpn_bn_m), Poisson_AIC=AIC(mpn_p_m))
+
+## no hay evidencia de sobre dispersion relevante; es mejor el POISSON.
+## el warning del modelo bn es por el gran valor del parámetro de sobredispersión, el algoritmo no encuentra un valor optimo de theta ya o existe sobredispersión real en los datos.
+
+###########################################################################
+
+## modelo Poisson hombre
+mpn_p_h <- glm2::glm2(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  family = "poisson",
+  ## subgrupo de la zona correspondiente
+  data = subset(datos.completos.t, ZONA == "norte" & SEXO == "Hombre"))
+summary(mpn_p_h)
+
+## modelo bin-neg hombre
+mpn_bn_h <- MASS::glm.nb(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  data =subset(datos.completos.t, ZONA == "norte" & SEXO == "Hombre"))
+summary(mpn_bn_h)
+
+## comparación de modelos hombre
+
+### test de razon de verosimilitudes
+pchisq(2 * (logLik(mpn_bn_h) - logLik(mpn_p_h)), df = 1, lower.tail = FALSE)
+## loglik es de   0.4992757 -> no hay evidencia de que el bin neg sea mejor que el poisson
+## nota: recordar que en bn la parametrización es V[Y] = µ + µ^2/theta (theta es el parametro de sobredispersión); por eso cuando theta es muy grande mu/theta ≈ 0, entonces V[Y] = µ
+## el parámetro de sobredispersión es 204.91
+
+### por AIC y BIC
+c(BN_AIC=AIC(mpn_bn_h), Poisson_AIC=AIC(mpn_p_h))
+
+## no hay evidencia de sobre dispersion relevante; es mejor el POISSON.
+```
+
+### modelo zona centro
+
+```{r eval = F}
+## modelo Poisson mujer
+mpc_p_m <- glm2::glm2(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  family = poisson(),
+  ## subgrupo de la zona correspondiente
+  data = subset(datos.completos.t, ZONA == "centro" & SEXO == "Mujer"))
+summary(mpc_p_m)
+
+## modelo bin-neg mujer
+mpc_bn_m <- MASS::glm.nb(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  data =subset(datos.completos.t, ZONA == "centro" & SEXO == "Mujer"))
+summary(mpc_bn_m)
+
+
+## comparación de modelos mujer
+
+### test de razon de verosimilitudes
+pchisq(2 * (logLik(mpc_bn_m) - logLik(mpc_p_m)), df = 1, lower.tail = FALSE)
+## loglik es de 2.281317e-30 -> hay evidencia de que el bin neg es mejor que el poisson
+## el parámetro de sobredispersion es 18.47
+
+### por AIC y BIC
+c(BN_AIC=AIC(mpc_bn_m), Poisson_AIC=AIC(mpc_p_m))
+
+## Es mejor el modelo bn
+
+####################################################
+
+## modelo Poisson hombre
+mpc_p_h <- glm2::glm2(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  family = poisson(),
+  ## subgrupo de la zona correspondiente
+  data = subset(datos.completos.t, ZONA == "centro" & SEXO == "Hombre"))
+summary(mpc_p_h)
+
+## modelo bin-neg hombre
+mpc_bn_h <- MASS::glm.nb(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  data =subset(datos.completos.t, ZONA == "centro" & SEXO == "Hombre"))
+summary(mpc_bn_h)
+
+
+## comparación de modelos hombre
+
+### test de razon de verosimilitudes
+pchisq(2 * (logLik(mpc_bn_h) - logLik(mpc_p_h)), df = 1, lower.tail = FALSE)
+## loglik es de 2.501834e-115 -> hay evidencia de que el bin neg es mejor que el poisson
+## el parámetro de sobredispersión es de 14.15
+
+### por AIC y BIC
+c(BN_AIC=AIC(mpc_bn_h), Poisson_AIC=AIC(mpc_p_h))
+
+## es mejor el bn
+```
+
+### modelo zona sur
+
+```{r eval = F}
+## modelo Poisson mujer
+mps_p_m <- glm2::glm2(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  family = poisson(),
+  ## subgrupo de la zona correspondiente.
+  data = subset(datos.completos.t, ZONA == "sur" & SEXO == "Mujer"))
+summary(mps_p_m)
+
+## modelo bin-neg mujer
+mps_bn_m <- MASS::glm.nb(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  data =subset(datos.completos.t, ZONA == "sur" & SEXO == "Mujer"))
+summary(mps_bn_m)
+
+## comparación de modelos mujer
+
+### test de razon de verosimilitudes
+pchisq(2 * (logLik(mps_bn_m) - logLik(mps_p_m)), df = 1, lower.tail = FALSE)
+## loglik es de 0.5378578 
+## El parámetro de sobredispersión es de 190.18
+
+### por AIC y BIC
+c(BN_AIC=AIC(mps_bn_m), Poisson_AIC=AIC(mps_p_m))
+
+## el modelo bn es mejor
+####################################################
+
+## modelo Poisson hombre
+mps_p_h <- glm2::glm2(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  family = poisson(),
+  ## subgrupo de la zona correspondiente
+  data = subset(datos.completos.t, ZONA == "centro" & SEXO == "Hombre"))
+summary(mps_p_h)
+
+## modelo bin-neg hombre
+mps_bn_h <- MASS::glm.nb(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  data =subset(datos.completos.t, ZONA == "centro" & SEXO == "Hombre"))
+summary(mps_bn_h)
+
+
+## comparación de modelos hombre
+
+### test de razon de verosimilitudes
+pchisq(2 * (logLik(mps_bn_h) - logLik(mps_p_h)), df = 1, lower.tail = FALSE)
+## loglik es de 2.501834e-115 -> hay evidencia de que el bin neg es mejor que el poisson
+## el parámetro de sobredispersión es de 14.15
+
+### por AIC y BIC
+c(BN_AIC=AIC(mps_bn_h), Poisson_AIC=AIC(mps_p_h))
+## es mejor el modelo bn
+```
+
+## Predicciones
+
+### Cambio anual de incidencia
+
+```{r eval= F}
+##  Betas del año (cambio por año)
+
+( betas <- c((exp(coef(mpn_p_m)["AÑO"])),      ## norte mujeres
+             (exp(coef(mpn_p_h)["AÑO"])),      ## norte hombres
+             (exp(coef(mpc_bn_m)["AÑO"])),     ## centro mujeres
+             (exp(coef(mpc_bn_h)["AÑO"])),     ## centro hombres
+             (exp(coef(mps_bn_m)["AÑO"])),     ## sur mujeres
+             (exp(coef(mps_bn_h)["AÑO"]))      ## sur hombres
+             ) ) ## sur hombres
+```
+
+### Calculo del porcentaje anual de cambio
+
+```{r eval = F}
+## función para el cálculo de PAC
+PAC <- function(a,                   ## vector con PACs de AÑO para cada zona y sexo
+                b,                   ## df con datos a partir de los cuales predecir
+                c){                  ## df con todas las poryecciones pob por sexo, quinquenio y zona
+  
+##  1. cálculo del porcentaje anual de cambio por zona y sexo
+  
+  PAC_z <- (a - 1) * 100             ## transformación empleada por el MINSAL
+
+########################################################################
+  
+## 2. Cálculo de incidencia acumulada
+  ##  tomar las incidencias de los últimos 5 años [2015-2019], junto a las pobs y calcular la tasa de incidencia acumulada por quinquenio y sexo, por cada zona.
+  
+   incidencia_acum <- b %>%
+    dplyr::filter(AÑO %in% 2015:2019) %>%             ## dejar últimos 5 años.
+    dplyr::group_by(ZONA, SEXO, QUINQUENIO) %>%       ## agrupar por las variables
+    dplyr::summarise(
+      casos_tot = sum(casos_aprox, na.rm = TRUE),     ## casos por cada grupo en el periodo
+      pob_tot   = sum(poblacion, na.rm = TRUE),       ## población por cada grupo en el periodo
+      tasa_acum_esp      = ((casos_tot / pob_tot))    ## tasa por hab
+    ) %>%
+    dplyr::ungroup() %>%
+     
+     ## añadir el valor de PAC por zona y sexo
+     mutate(PAC = case_when(
+       SEXO == "Mujer"  & ZONA == "norte"   ~ PAC_z[1],
+       SEXO == "Hombre" & ZONA == "norte"   ~ PAC_z[2],
+       SEXO == "Mujer"  & ZONA == "centro"  ~ PAC_z[3],
+       SEXO == "Hombre" & ZONA == "centro"  ~ PAC_z[4],
+       SEXO == "Mujer"  & ZONA == "sur"     ~ PAC_z[5],
+       SEXO == "Hombre" & ZONA == "sur"     ~ PAC_z[6]
+     ))
+   
+###########################################################################  
+   
+## 3. Reconceptualización de la PAC
+   ## La PAC corresponde al porcentaje anual de cambio de la tasa de incidencias, es decir:
+   ##                        PAC = exp(B_año) = ( (tasa año i+1) / tasa año i) -1) * 100  
+   ## entonces:
+   ##                        PAC = ( (tasa año i+1) / tasa año i) -1) * 100   /  *(1/100)
+   ##                  PAC / 100 = ( (tasa año i+1) / tasa año i) -1          /  + 1
+   ##               (PAC/100) +1 =  (tasa año i+1) / tasa año i               / * (tasa año i)
+   ## ( tasa año i * ((PAC/100)+1) )^año proyectado = (tasa año i+1)
+
+        ## la "tasa año i" es la calculada en el paso 2 (tasa_acum_esp). Para la proyección se considera que esa tasa representa a la tasa del año i = 2018 (año intermedio entre el 2015 y 2019). Entonces, las proyecciones son a partir de ese año. La proyecciones seran por 10 años desde el año i (igual que el minsal) en un determinado sexo y quinquenio
+   
+    proyecciones <- purrr::map(1:10, ~   ## iterar sobre el vector 1:10 (años a proyectar)
+                          
+                          {              ## en cada iteración hacer lo siguente {\XOX/}
+    
+      
+    tibble(!!paste0("tasa_proy_",        ## crear en tibble cuyo nombre será "tasa_proy_" 
+                    .x) :=               ## y la iteración que se está haciendo
+             
+                                         ## con !! se pone el string creado como nombre de la columnna
+                                         ## con := asigna el nombre generado a la columna
+             
+             ## los valores de la columna se calculan como:
+             incidencia_acum$tasa_acum_esp * (1 + incidencia_acum$PAC/100)^.x)
+  }
+             ## como esto está dentro del map, se genera una lista con 10 tibble 
+  
+  ) |> list_cbind()                      ## se unen los tibble en un df (proyecciones)
+  
+  incidencia_acum_2 <- bind_cols(incidencia_acum, proyecciones) ## se unen al df original en el mismo orden.
+  
+  
+
+##################################################################################### 
+  
+## 4. Cálculo de casos proyectados por año
+  ## los casos proyectados desde el año i (2019) al año k (2028), para cada quinquenio y sexo, se ob multiplicando las proyecciones de pob (df = c) de cada año sexo y quinquenio por la tasa proyectada obtenida en el paso 3
+  
+  incidencia_acum_3 <- incidencia_acum_2 %>%
+    rename("2019" = "tasa_proy_1" ,
+           "2020" = "tasa_proy_2" ,
+           "2021" = "tasa_proy_3" ,
+           "2022" = "tasa_proy_4" ,
+           "2023" = "tasa_proy_5" ,
+           "2024" = "tasa_proy_6" ,
+           "2025" = "tasa_proy_7" ,
+           "2026" = "tasa_proy_8" ,
+           "2027" = "tasa_proy_9" ,
+           "2028" = "tasa_proy_10" ) %>%
+    pivot_longer(
+      cols = matches("^20\\d{2}$"),
+      names_to = "AÑO",
+      values_to = "tasa_proyec") %>%
+    mutate(AÑO = as.integer(AÑO))
+  
+  
+  c <- c %>%
+    group_by(SEXO, QUINQUENIO, AÑO, ZONA) %>%
+    summarise(POBLACION = sum(POBLACION))
+  
+  incidencia_acum_4 <- incidencia_acum_3 %>%
+    left_join(c, by = c("ZONA", "SEXO", "AÑO", "QUINQUENIO")) %>%
+    mutate(CASOS_PROYECT = tasa_proyec * POBLACION,
+           AÑO = factor(AÑO))
+  
+  incidencia_acum_5 <- incidencia_acum_4 %>%
+    group_by(AÑO, ZONA, SEXO, QUINQUENIO) %>%
+    summarise(casos = sum(CASOS_PROYECT))
+  
+  
+  
+  
+##############################################################################################  
+## salidas: PAC y tasas acumuladas
+  return(list(PAC = PAC_z, 
+              proyecciones = proyecciones,
+              incidencia_1 = incidencia_acum,
+              incidencia_acum_2 = incidencia_acum_2,
+              incidencia_acum_3 = incidencia_acum_3,
+              c = c,
+              incidencia_acum_4 = incidencia_acum_4,
+              incidencia_acum_5 = incidencia_acum_5
+              ))
+
+}
+  
+```
+
+```{r eval = F}
+PAC(betas, datos.completos.t, pob.quinquenio) ## funcciona. Ahora, hacerlo por cada SS.
+```
+
+```{r eval = F}
+## comp con lo que hay
+
+datos.completos.t %>%
+  group_by(ZONA, AÑO, SEXO, QUINQUENIO) %>%
+  summarise(casos = sum(casos_aprox))
+
+```
+
+# Metodología MINSAL por SS
+
+## 1. Servicio de Salud Arica y Parinacota
+
+```{r}
+## ver opcion de hacer modelos en loop
+## pois y quasi poiss, comparar con AIC y BIC
+## ver si hay algoritmo para probar si la distirbución poisson, comparar la teórica con la observada y ver que tal es, si se aleja mucho o no; es un test. o con optim; rev libros de estadística con R si esta esa libreria. y comparar luego la frecuencia por test de chi2.
+## como la tesis no busca encontrar el mejor modelo según la distirbución, la comparación de Poisson con otros modelos no viene a lugar en este caso. Eso podría una nueva investigación
+```
+
+```{r}
+## Mujeres
+
+# Exploración de datos
+d <- subset(datos.completos, Servicio_salud == "Servicio de Salud Arica y Parinacota" & SEXO == "Mujer")
+plot(density(d$casos_aprox),main = "", xlab = "Número de casos", ylab = "Frecuencia",lwd=2)
+hist(d$casos_aprox, probability=T,main="Histograma",ylab="Densidad" ,xlab="Número de casos",col="pink")
+lines(density(d$casos_aprox))
+mean(d$casos_aprox)
+var(d$casos_aprox)
+###########################################################################
+
+# Modelado estadístico 
+
+## 1. modelo Poisson mujer 
+m1_p_m <- glm2::glm2(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  family = "poisson",
+  data = subset(datos.completos, Servicio_salud == "Servicio de Salud Arica y Parinacota" & SEXO == "Mujer"))
+summary(m1_p_m)
+AER::dispersiontest(m1_p_m) # no hay evidencia de sobredispersión
+par(mfrow=c(2,2))
+plot(m1_p_m,)
+
+
+## 2. modelo BinNeg mujer 
+m1_bn_m <- MASS::glm.nb(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  data =subset(datos.completos, Servicio_salud == "Servicio de Salud Arica y Parinacota" & SEXO == "Mujer"))
+
+summary(m1_bn_m)
+par(mfrow=c(2,2))
+plot(m1_bn_m)
+###########################################################################
+
+# comparación de modelos 
+
+## test de razon de verosimilitudes
+pchisq(2 * (logLik(m1_bn_m) - logLik(m1_p_m)), df = 1, lower.tail = FALSE)
+lrtest(m1_bn_m, m1_p_m)
+pscl::odTest(m1_bn_m) ## evaluar presencia de sobredispersión H0: no hay osbredispersión; H1: hay sobredispersión
+
+## AIC
+c(BN_AIC=AIC(m1_bn_m), Poisson_AIC=AIC(m1_p_m))
+## ARICA & MUJER -> MODELO POISSON
+###########################################################################
+```
+
+```{r eval = F}
+table(d$casos_aprox)
+
+lambda_gorro <- mean(d$casos_aprox)
+cuts <- (min(d$casos_aprox)-0.5):(max(d$casos_aprox)+0.5)
+
+EnvStats::gofTest(
+  y = d$casos_aprox,
+  distribution = "pois",
+  alternative = "two.sided",
+  test = "chisq",
+  estimate.params = TRUE,
+  cut.points = cuts
+)
+```
+
+```{r eval = F}
+obs <- table(d$casos_aprox)
+k <- as.numeric(names(obs))
+exp <- dpois(k, lambda_gorro) * length(d$casos_aprox)
+
+barplot(rbind(obs, exp), beside = TRUE,
+        col = c("steelblue", "tomato"),
+        names.arg = k, legend = c("Observado", "Esperado"))
+```
+
+```{r}
+## Hombres
+# Exploración de datos
+d <- subset(datos.completos, Servicio_salud == "Servicio de Salud Arica y Parinacota" & SEXO == "Hombre")
+plot(density(d$casos_aprox),main = "", xlab = "Número de casos", ylab = "Frecuencia",lwd=2)
+hist(d$casos_aprox, probability=T,main="Histograma",ylab="Densidad" ,xlab="Número de casos",col="pink")
+lines(density(d$casos_aprox))
+mean(d$casos_aprox)
+var(d$casos_aprox)
+############################################################################
+
+# Modelado estadístico
+
+## 1. Modelo Poisson hombre
+m1_p_h <- glm2::glm2(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  family = "poisson",
+  data = subset(datos.completos, Servicio_salud == "Servicio de Salud Arica y Parinacota" & SEXO == "Hombre"))
+summary(m1_p_h)
+AER::dispersiontest(m1_p_h) ## no hay sobredispersión -> ajustar poisson
+par(mfrow=c(2,2))
+plot(m1_p_h)
+
+## 2. Modelo BinNeg hombre
+m1_bn_h <- MASS::glm.nb(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  data =subset(datos.completos, Servicio_salud == "Servicio de Salud Arica y Parinacota" & SEXO == "Hombre"))
+summary(m1_bn_h)
+plot(m1_bn_h)
+
+###########################################################################
+## Comparación de modelos hombre
+
+### test de razon de verosimilitudes
+pchisq(2 * (logLik(m1_bn_h) - logLik(m1_p_h)), df = 1, lower.tail = FALSE)
+lrtest(m1_bn_h, m1_p_h)
+pscl::odTest(m1_bn_h)
+
+### por AIC y BIC
+c(BN_AIC=AIC(m1_bn_h), Poisson_AIC=AIC(m1_p_h))
+## ARICA & HOMBRE -> POISSON
+###########################################################################
+```
+
+## 2. Servicio de Salud Tarapacá
+
+```{r}
+## mujeres
+d <- subset(datos.completos, Servicio_salud == "Servicio de Salud Tarapacá" & SEXO == "Mujer")
+plot(density(d$casos_aprox),main = "", xlab = "Número de casos", ylab = "Frecuencia",lwd=2)
+hist(d$casos_aprox, probability=T,main="Histograma",ylab="Densidad" ,xlab="Número de casos",col="pink")
+lines(density(d$casos_aprox))
+mean(d$casos_aprox)
+var(d$casos_aprox)
+###########################################################################
+
+# Modelado estadístico
+
+## 1. modelo Poisson mujer
+m2_p_m <- glm2::glm2(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  family = "poisson",
+  data = subset(datos.completos, Servicio_salud == "Servicio de Salud Tarapacá" & SEXO == "Mujer"))
+summary(m2_p_m)
+AER::dispersiontest(m2_p_m) ## no hya sobredispersión, quedarse con Poisson
+par(mfrow=c(2,2))
+plot(m2_p_m)
+
+## 2. modelo BinNeg mujer
+m2_bn_m <- MASS::glm.nb(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  data =subset(datos.completos, Servicio_salud == "Servicio de Salud Tarapacá" & SEXO == "Mujer"))
+summary(m2_bn_m)
+plot(m2_bn_m)
+
+###########################################################################
+
+## comparación de modelos mujer
+
+## test de razon de verosimilitudes
+pchisq(2 * (logLik(m2_bn_m) - logLik(m2_p_m)), df = 1, lower.tail = FALSE)
+lrtest(m2_bn_m, m2_p_m)
+pscl::odTest(m2_bn_m)
+
+### por AIC y 
+c(BN_AIC=AIC(m2_bn_m), Poisson_AIC=AIC(m2_p_m))
+## TARAPACÁ & MUJER = POISSON
+###########################################################################
+```
+
+```{r}
+d <- subset(datos.completos, Servicio_salud == "Servicio de Salud Tarapacá" & SEXO == "Hombre")
+plot(density(d$casos_aprox),main = "", xlab = "Número de casos", ylab = "Frecuencia",lwd=2)
+hist(d$casos_aprox, probability=T,main="Histograma",ylab="Densidad" ,xlab="Número de casos",col="pink")
+lines(density(d$casos_aprox))
+mean(d$casos_aprox)
+var(d$casos_aprox)
+
+## modelo Poisson hombre
+m2_p_h <- glm2::glm2(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  family = "poisson",
+  data = subset(datos.completos, Servicio_salud == "Servicio de Salud Tarapacá" & SEXO == "Hombre"))
+summary(m2_p_h)
+AER::dispersiontest(m2_p_h) ## no hay sobredispersión, Poisson.
+par(mfrow=c(2,2))
+plot(m2_p_h)
+
+## modelo bin-neg hombre
+m2_bn_h <- MASS::glm.nb(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  data =subset(datos.completos, Servicio_salud == "Servicio de Salud Tarapacá" & SEXO == "Hombre"))
+summary(m2_bn_h)
+
+## comparación de modelos hombre
+
+### test de razon de verosimilitudes
+pchisq(2 * (logLik(m2_bn_h) - logLik(m2_p_h)), df = 1, lower.tail = FALSE)
+lrtest(m2_bn_h, m2_p_h)
+pscl::odTest(m2_bn_h)
+
+### por AIC y BIC
+c(BN_AIC=AIC(m2_bn_h), Poisson_AIC=AIC(m2_p_h))
+
+## TARAPACÁ & HOMBRE = POISSON
+###########################################################################
+```
+
+## 3. Servicio de Salud Antofagasta
+
+```{r}
+# Exploración de datos
+d <- subset(datos.completos, Servicio_salud == "Servicio de Salud Antofagasta" & SEXO == "Mujer")
+plot(density(d$casos_aprox),main = "", xlab = "Número de casos", ylab = "Frecuencia",lwd=2)
+hist(d$casos_aprox, probability=T,main="Histograma",ylab="Densidad" ,xlab="Número de casos",col="pink")
+lines(density(d$casos_aprox))
+mean(d$casos_aprox)
+var(d$casos_aprox)
+###########################################################################
+
+# Modelado estadístico
+
+## 1. modelo Poisson mujer
+m3_p_m <- glm2::glm2(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  family = "poisson",
+  data = subset(datos.completos, Servicio_salud == "Servicio de Salud Antofagasta" & SEXO == "Mujer"))
+summary(m3_p_m)
+AER::dispersiontest(m3_p_m) ## no hay evidencia de sobredispersión
+par(mfrow=c(2,2))
+plot(m3_p_m)
+
+## 2. modelo BinNeg mujer
+m3_bn_m <- MASS::glm.nb(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  data =subset(datos.completos, Servicio_salud == "Servicio de Salud Antofagasta" & SEXO == "Mujer"))
+summary(m3_bn_m)
+plot(m3_bn_m)
+###########################################################################
+
+## comparación de modelos mujer
+
+### test de razon de verosimilitudes
+pchisq(2 * (logLik(m3_bn_m) - logLik(m3_p_m)), df = 1, lower.tail = FALSE)
+lrtest(m3_bn_m, m3_p_m)
+pscl::odTest(m3_bn_m)
+
+### por AIC y BIC
+c(BN_AIC=AIC(m3_bn_m), Poisson_AIC=AIC(m3_p_m))
+
+## ANTOFAGASTA & MUJER = POISSON
+###########################################################################
+```
+
+```{r}
+# Exploración de datos
+d <- subset(datos.completos, Servicio_salud == "Servicio de Salud Antofagasta" & SEXO == "Hombre")
+plot(density(d$casos_aprox),main = "", xlab = "Número de casos", ylab = "Frecuencia",lwd=2)
+hist(d$casos_aprox, probability=T,main="Histograma",ylab="Densidad" ,xlab="Número de casos",col="pink")
+lines(density(d$casos_aprox))
+mean(d$casos_aprox)
+var(d$casos_aprox)
+###########################################################################
+
+# Modelado estadístico
+
+## 1. modelo Poisson hombre
+m3_p_h <- glm2::glm2(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  family = "poisson",
+  data = subset(datos.completos, Servicio_salud == "Servicio de Salud Antofagasta" & SEXO == "Hombre"))
+summary(m3_p_h)
+AER::dispersiontest(m3_p_h) # -> no hay evidencia de sobredispersión
+par(mfrow=c(2,2))
+plot(m3_p_h)
+
+
+## 2. modelo bin-neg hombre
+m3_bn_h <- MASS::glm.nb(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  data =subset(datos.completos, Servicio_salud == "Servicio de Salud Antofagasta" & SEXO == "Hombre"))
+summary(m3_bn_h)
+plot(m3_bn_h)
+###########################################################################
+
+# comparación de modelos hombre
+
+### test de razon de verosimilitudes
+pchisq(2 * (logLik(m3_bn_h) - logLik(m3_p_h)), df = 1, lower.tail = FALSE)
+lrtest(m3_bn_h, m3_p_h)
+pscl::odTest(m3_bn_h)
+
+### por AIC y BIC
+c(BN_AIC=AIC(m3_bn_h), Poisson_AIC=AIC(m3_p_h))
+
+## ANTOFAGASTA & HOMBRE = POISSON
+###########################################################################
+```
+
+## 4. Servicio de Salud Atacama
+
+```{r}
+# Exploración de datos
+d <- subset(datos.completos, Servicio_salud == "Servicio de Salud Atacama" & SEXO == "Mujer")
+plot(density(d$casos_aprox),main = "", xlab = "Número de casos", ylab = "Frecuencia",lwd=2)
+hist(d$casos_aprox, probability=T,main="Histograma",ylab="Densidad" ,xlab="Número de casos",col="pink")
+lines(density(d$casos_aprox))
+mean(d$casos_aprox)
+var(d$casos_aprox)
+###########################################################################
+
+# Modelado estadístico
+
+## 1. modelo Poisson mujer
+m4_p_m <- glm2::glm2(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  family = "poisson",
+  data = subset(datos.completos, Servicio_salud == "Servicio de Salud Atacama" & SEXO == "Mujer"))
+summary(m4_p_m)
+AER::dispersiontest(m4_p_m) # no hay evidencia de sobredispersión
+par(mfrow=c(2,2))
+plot(m4_p_m)
+
+## 2. modelo bin-neg mujer
+m4_bn_m <- MASS::glm.nb(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  data =subset(datos.completos, Servicio_salud == "Servicio de Salud Atacama" & SEXO == "Mujer"))
+summary(m4_bn_m)
+plot(m4_bn_m)
+###########################################################################
+
+# comparación de modelos mujer
+
+### test de razon de verosimilitudes
+pchisq(2 * (logLik(m4_bn_m) - logLik(m4_p_m)), df = 1, lower.tail = FALSE)
+lrtest(m4_bn_m, m4_p_m)
+pscl::odTest(m4_bn_m)
+
+### por AIC y BIC
+c(BN_AIC=AIC(m4_bn_m), Poisson_AIC=AIC(m4_p_m))
+
+## ATACAMA & MUJER = POISSON
+###########################################################################
+```
+
+```{r}
+# Exploración de datos
+d <- subset(datos.completos, Servicio_salud == "Servicio de Salud Atacama" & SEXO == "Hombre")
+plot(density(d$casos_aprox),main = "", xlab = "Número de casos", ylab = "Frecuencia",lwd=2)
+hist(d$casos_aprox, probability=T,main="Histograma",ylab="Densidad" ,xlab="Número de casos",col="pink")
+lines(density(d$casos_aprox))
+mean(d$casos_aprox)
+var(d$casos_aprox)
+###########################################################################
+
+# modelado estadístico
+
+## modelo Poisson hombre
+m4_p_h <- glm2::glm2(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  family = "poisson",
+  data = subset(datos.completos, Servicio_salud == "Servicio de Salud Atacama" & SEXO == "Hombre"))
+summary(m4_p_h)
+AER::dispersiontest(m4_p_h) # no hay evidencia de sobredispersión
+par(mfrow=c(2,2))
+plot(m4_p_h)
+
+## modelo bin-neg hombre
+m4_bn_h <- MASS::glm.nb(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  data =subset(datos.completos, Servicio_salud == "Servicio de Salud Atacama" & SEXO == "Hombre"))
+summary(m4_bn_h)
+plot(m4_bn_h)
+###########################################################################
+
+# comparación de modelos hombre
+
+### test de razon de verosimilitudes
+pchisq(2 * (logLik(m4_bn_h) - logLik(m4_p_h)), df = 1, lower.tail = FALSE)
+lrtest(m4_bn_h, m4_p_h)
+pscl::odTest(m4_bn_h)
+
+### por AIC y BIC
+c(BN_AIC=AIC(m4_bn_h), Poisson_AIC=AIC(m4_p_h))
+
+## ATACAMA & HOMBRE = POISSON
+###########################################################################
+```
+
+## 5. Servicio de Salud Coquimbo
+
+```{r}
+# Exploración de datos
+d <- subset(datos.completos, Servicio_salud == "Servicio de Salud Coquimbo" & SEXO == "Mujer")
+plot(density(d$casos_aprox),main = "", xlab = "Número de casos", ylab = "Frecuencia",lwd=2)
+hist(d$casos_aprox, probability=T,main="Histograma",ylab="Densidad" ,xlab="Número de casos",col="pink")
+lines(density(d$casos_aprox))
+mean(d$casos_aprox)
+var(d$casos_aprox)
+###########################################################################
+
+# modelado estadístico
+
+## 1. modelo Poisson mujer
+m5_p_m <- glm2::glm2(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  family = "poisson",
+  data = subset(datos.completos, Servicio_salud == "Servicio de Salud Coquimbo" & SEXO == "Mujer"))
+summary(m5_p_m)
+AER::dispersiontest(m5_p_m) # no hay evidencia de sobredispersión
+par(mfrow=c(2,2))
+plot(m5_p_m)
+
+## 2. modelo bin-neg mujer
+m5_bn_m <- MASS::glm.nb(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  data =subset(datos.completos, Servicio_salud == "Servicio de Salud Coquimbo" & SEXO == "Mujer"))
+summary(m5_bn_m)
+plot(m5_bn_m)
+###########################################################################
+
+# comparación de modelos mujer
+
+### test de razon de verosimilitudes
+pchisq(2 * (logLik(m5_bn_m) - logLik(m5_p_m)), df = 1, lower.tail = FALSE)
+lrtest(m5_bn_m, m5_p_m)
+pscl::odTest(m5_bn_m)
+
+### por AIC y BIC
+c(BN_AIC=AIC(m5_bn_m), Poisson_AIC=AIC(m5_p_m))
+
+## COQUIMBO & MUJER = POISSON
+###########################################################################
+```
+
+```{r}
+# Exploración de datos
+d <- subset(datos.completos, Servicio_salud == "Servicio de Salud Coquimbo" & SEXO == "Hombre")
+plot(density(d$casos_aprox),main = "", xlab = "Número de casos", ylab = "Frecuencia",lwd=2)
+hist(d$casos_aprox, probability=T,main="Histograma",ylab="Densidad" ,xlab="Número de casos",col="pink")
+lines(density(d$casos_aprox))
+mean(d$casos_aprox)
+var(d$casos_aprox)
+###########################################################################
+
+## modelo Poisson hombre
+m5_p_h <- glm2::glm2(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  family = "poisson",
+  data = subset(datos.completos, Servicio_salud == "Servicio de Salud Coquimbo" & SEXO == "Hombre"))
+summary(m5_p_h)
+AER::dispersiontest(m5_p_h) # no hay evidencia de sobredispersión
+par(mfrow=c(2,2))
+plot(m5_p_h)
+
+## modelo bin-neg hombre
+m5_bn_h <- MASS::glm.nb(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  data =subset(datos.completos, Servicio_salud == "Servicio de Salud Coquimbo" & SEXO == "Hombre"))
+summary(m5_bn_h)
+###########################################################################
+
+# comparación de modelos hombre
+
+## test de razon de verosimilitudes
+pchisq(2 * (logLik(m5_bn_h) - logLik(m5_p_h)), df = 1, lower.tail = FALSE)
+lrtest(m5_bn_h, m5_p_h)
+pscl::odTest(m5_bn_h)
+
+### por AIC y BIC
+c(BN_AIC=AIC(m5_bn_h), Poisson_AIC=AIC(m5_p_h))
+###########################################################################
+```
+
+## 6. Servicio de Salud Aconcagua
+
+```{r}
+# Exploración de datos
+d <- subset(datos.completos, Servicio_salud == "Servicio de Salud Aconcagua" & SEXO == "Mujer")
+plot(density(d$casos_aprox),main = "", xlab = "Número de casos", ylab = "Frecuencia",lwd=2)
+hist(d$casos_aprox, probability=T,main="Histograma",ylab="Densidad" ,xlab="Número de casos",col="pink")
+lines(density(d$casos_aprox))
+mean(d$casos_aprox)
+var(d$casos_aprox)
+###########################################################################
+
+# Modelado estadístico
+
+## 1. modelo Poisson mujer
+m6_p_m <- glm2::glm2(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  family = "poisson",
+  data = subset(datos.completos, Servicio_salud == "Servicio de Salud Aconcagua" & SEXO == "Mujer"))
+summary(m6_p_m)
+AER::dispersiontest(m6_p_m) # no hay evidencia de sobredispersión
+par(mfrow=c(2,2))
+plot(m6_p_m)
+
+## 2. modelo bin-neg mujer
+m6_bn_m <- MASS::glm.nb(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  data =subset(datos.completos, Servicio_salud == "Servicio de Salud Aconcagua" & SEXO == "Mujer"))
+summary(m6_bn_m)
+plot(m6_bn_m)
+###########################################################################
+
+# comparación de modelos mujer
+
+## test de razon de verosimilitudes
+pchisq(2 * (logLik(m6_bn_m) - logLik(m6_p_m)), df = 1, lower.tail = FALSE)
+lrtest(m6_bn_m, m6_p_m)
+pscl::odTest(m6_bn_m)
+
+## por AIC y BIC
+c(BN_AIC=AIC(m6_bn_m), Poisson_AIC=AIC(m6_p_m))
+
+## ACONCAGUA & MUJER = POISSON
+###########################################################################
+```
+
+```{r}
+# Exploración de datos
+d <- subset(datos.completos, Servicio_salud == "Servicio de Salud Aconcagua" & SEXO == "Hombre")
+plot(density(d$casos_aprox),main = "", xlab = "Número de casos", ylab = "Frecuencia",lwd=2)
+hist(d$casos_aprox, probability=T,main="Histograma",ylab="Densidad" ,xlab="Número de casos",col="pink")
+lines(density(d$casos_aprox))
+mean(d$casos_aprox)
+var(d$casos_aprox)
+###########################################################################
+
+# modelado estadístico
+
+## 1. modelo Poisson hombre
+m6_p_h <- glm2::glm2(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  family = "poisson",
+  data = subset(datos.completos, Servicio_salud == "Servicio de Salud Aconcagua" & SEXO == "Hombre"))
+summary(m6_p_h)
+AER::dispersiontest(m6_p_h) # no hay evidencia de sobredispersión
+par(mfrow=c(2,2))
+plot(m6_p_h)
+
+## 2. modelo bin-neg hombre
+m6_bn_h <- MASS::glm.nb(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  data =subset(datos.completos, Servicio_salud == "Servicio de Salud Aconcagua" & SEXO == "Hombre"))
+summary(m6_bn_h)
+plot(m6_bn_h)
+###########################################################################
+
+# comparación de modelos hombre
+
+### test de razon de verosimilitudes
+pchisq(2 * (logLik(m6_bn_h) - logLik(m6_p_h)), df = 1, lower.tail = FALSE)
+lrtest(m6_bn_h, m6_p_h)
+pscl::odTest(m6_bn_h)
+
+### por AIC y BIC
+c(BN_AIC=AIC(m6_bn_h), Poisson_AIC=AIC(m6_p_h))
+
+## ACONCAGUA & HOMBRE = POISSON
+###########################################################################
+```
+
+## 7. Servicio de Salud Viña del Mar Quillota
+
+```{r}
+# Exploración de datos
+d <- subset(datos.completos, Servicio_salud == "Servicio de Salud Viña del Mar Quillota" & SEXO == "Mujer")
+plot(density(d$casos_aprox),main = "", xlab = "Número de casos", ylab = "Frecuencia",lwd=2)
+hist(d$casos_aprox, probability=T,main="Histograma",ylab="Densidad" ,xlab="Número de casos",col="pink")
+lines(density(d$casos_aprox))
+mean(d$casos_aprox)
+var(d$casos_aprox)
+###########################################################################
+
+# modelado estadístico
+
+## 1. modelo Poisson mujer
+m7_p_m <- glm2::glm2(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  family = "poisson",
+  data = subset(datos.completos, Servicio_salud == "Servicio de Salud Viña del Mar Quillota" & SEXO == "Mujer"))
+summary(m7_p_m)
+AER::dispersiontest(m7_p_m) ## no hay evidencia de sobredispersión
+par(mfrow=c(2,2))
+plot(m7_p_m)
+
+## 2. modelo bin-neg mujer
+m7_bn_m <- MASS::glm.nb(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  data =subset(datos.completos, Servicio_salud ==  "Servicio de Salud Viña del Mar Quillota" & SEXO == "Mujer"))
+summary(m7_bn_m)
+plot(m7_bn_m)
+###########################################################################
+
+# comparación de modelos mujer
+
+## test de razon de verosimilitudes
+pchisq(2 * (logLik(m7_bn_m) - logLik(m7_p_m)), df = 1, lower.tail = FALSE)
+lrtest(m7_bn_m, m7_p_m)
+pscl::odTest(m7_bn_m)
+
+### por AIC y BIC
+c(BN_AIC=AIC(m7_bn_m), Poisson_AIC=AIC(m7_p_m))
+
+## VIÑA & MUJER = POISSON
+###########################################################################
+```
+
+```{r}
+# Exploración de datos
+d <- subset(datos.completos, Servicio_salud == "Servicio de Salud Viña del Mar Quillota" & SEXO == "Hombre")
+plot(density(d$casos_aprox),main = "", xlab = "Número de casos", ylab = "Frecuencia",lwd=2)
+hist(d$casos_aprox, probability=T,main="Histograma",ylab="Densidad" ,xlab="Número de casos",col="pink")
+lines(density(d$casos_aprox))
+mean(d$casos_aprox)
+var(d$casos_aprox)
+###########################################################################
+
+# modelado estadístico
+
+## 1. modelo Poisson hombre
+m7_p_h <- glm2::glm2(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  family = "poisson",
+  data = subset(datos.completos, Servicio_salud ==  "Servicio de Salud Viña del Mar Quillota" & SEXO == "Hombre"))
+summary(m7_p_h)
+AER::dispersiontest(m7_p_h) # no hay evidencia de sobredispersión
+par(mfrow=c(2,2))
+plot(m7_p_h)
+
+## 2. modelo bin-neg hombre
+m7_bn_h <- MASS::glm.nb(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  data =subset(datos.completos, Servicio_salud ==  "Servicio de Salud Viña del Mar Quillota" & SEXO == "Hombre"))
+summary(m7_bn_h)
+plot(m7_bn_h)
+###########################################################################
+
+# comparación de modelos hombre
+
+## test de razon de verosimilitudes
+pchisq(2 * (logLik(m7_bn_h) - logLik(m7_p_h)), df = 1, lower.tail = FALSE)
+lrtest(m7_bn_h, m7_p_h)
+pscl::odTest(m7_bn_h)
+
+### por AIC y BIC
+c(BN_AIC=AIC(m7_bn_h), Poisson_AIC=AIC(m7_p_h))
+
+## VIÑA & HOMBRE = POISSON
+###########################################################################
+```
+
+## 8. Servicio de Salud Valparaíso San Antonio
+
+```{r}
+# Exploración de datos
+d <- subset(datos.completos, Servicio_salud ==  "Servicio de Salud Valparaíso San Antonio" & SEXO == "Mujer")
+plot(density(d$casos_aprox),main = "", xlab = "Número de casos", ylab = "Frecuencia",lwd=2)
+hist(d$casos_aprox, probability=T,main="Histograma",ylab="Densidad" ,xlab="Número de casos",col="pink")
+lines(density(d$casos_aprox))
+mean(d$casos_aprox)
+var(d$casos_aprox)
+###########################################################################
+
+# modelado estadístico
+
+## 1. modelo Poisson mujer
+m8_p_m <- glm2::glm2(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  family = "poisson",
+  data = subset(datos.completos, Servicio_salud ==  "Servicio de Salud Valparaíso San Antonio" & SEXO == "Mujer"))
+summary(m8_p_m)
+AER::dispersiontest(m8_p_m) # no hay evidencia de sobredispersión
+par(mfrow=c(2,2))
+plot(m8_p_m)
+
+## 2. modelo bin-neg mujer
+m8_bn_m <- MASS::glm.nb(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  data =subset(datos.completos, Servicio_salud ==  "Servicio de Salud Valparaíso San Antonio" & SEXO == "Mujer"))
+summary(m8_bn_m)
+plot(m8_bn_m)
+###########################################################################
+
+# comparación de modelos mujer
+
+# test de razon de verosimilitudes
+pchisq(2 * (logLik(m8_bn_m) - logLik(m8_p_m)), df = 1, lower.tail = FALSE)
+lrtest(m8_bn_m, m8_p_m)
+pscl::odTest(m8_bn_m)
+
+### por AIC y BIC
+c(BN_AIC=AIC(m8_bn_m), Poisson_AIC=AIC(m8_p_m))
+
+## VALPO & MUJER = POISSON
+###########################################################################
+```
+
+```{r}
+# Exploración de datos
+d <- subset(datos.completos, Servicio_salud ==  "Servicio de Salud Valparaíso San Antonio" & SEXO == "Hombre")
+plot(density(d$casos_aprox),main = "", xlab = "Número de casos", ylab = "Frecuencia",lwd=2)
+hist(d$casos_aprox, probability=T,main="Histograma",ylab="Densidad" ,xlab="Número de casos",col="pink")
+lines(density(d$casos_aprox))
+mean(d$casos_aprox)
+var(d$casos_aprox)
+###########################################################################
+
+# modelado estadístico
+
+## 1. modelo Poisson hombre
+m8_p_h <- glm2::glm2(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  family = "poisson",
+  ## subgrupo de la zona correspondiente
+  data = subset(datos.completos, Servicio_salud ==  "Servicio de Salud Valparaíso San Antonio" & SEXO == "Hombre"))
+summary(m8_p_h)
+AER::dispersiontest(m8_p_h) # no hay evidencia de sobredispersión
+par(mfrow=c(2,2))
+plot(m8_p_h)
+
+## 2. modelo bin-neg hombre
+m8_bn_h <- MASS::glm.nb(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  data =subset(datos.completos, Servicio_salud ==  "Servicio de Salud Valparaíso San Antonio" & SEXO == "Hombre"))
+summary(m8_bn_h)
+plot(m8_bn_h)
+###########################################################################
+
+# comparación de modelos hombre
+
+## test de razon de verosimilitudes
+pchisq(2 * (logLik(m8_bn_h) - logLik(m8_p_h)), df = 1, lower.tail = FALSE)
+lrtest(m8_bn_h, m8_p_h)
+pscl::odTest(m8_bn_h)
+
+### por AIC y BIC
+c(BN_AIC=AIC(m8_bn_h), Poisson_AIC=AIC(m8_p_h))
+
+## VALPO & HOMBRE = POISSON
+###########################################################################
+```
+
+## 9. Servicio de Salud Metropolitano Central
+
+```{r}
+# Exploración de datos
+d <- subset(datos.completos, Servicio_salud == "Servicio de Salud Metropolitano Central" & SEXO == "Mujer")
+plot(density(d$casos_aprox),main = "", xlab = "Número de casos", ylab = "Frecuencia",lwd=2)
+hist(d$casos_aprox, probability=T,main="Histograma",ylab="Densidad" ,xlab="Número de casos",col="pink")
+lines(density(d$casos_aprox))
+mean(d$casos_aprox)
+var(d$casos_aprox)
+###########################################################################
+
+# Modelado estadístico
+
+## 1. modelo Poisson mujer
+m9_p_m <- glm2::glm2(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  family = "poisson",
+  data = subset(datos.completos, Servicio_salud == "Servicio de Salud Metropolitano Central" & SEXO == "Mujer"))
+summary(m9_p_m)
+AER::dispersiontest(m9_p_m) # no hay evidencia de sobredispersión
+par(mfrow=c(2,2))
+plot(m9_p_m)
+
+## modelo bin-neg mujer
+m9_bn_m <- MASS::glm.nb(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  data =subset(datos.completos, Servicio_salud == "Servicio de Salud Metropolitano Central" & SEXO == "Mujer"))
+summary(m9_bn_m)
+plot(m9_bn_m)
+###########################################################################
+
+# Comparación de modelos mujer
+
+## test de razon de verosimilitudes
+pchisq(2 * (logLik(m9_bn_m) - logLik(m9_p_m)), df = 1, lower.tail = FALSE)
+lrtest(m9_bn_m, m9_p_m)
+pscl::odTest(m9_bn_m)
+
+## por AIC y BIC
+c(BN_AIC=AIC(m9_bn_m), Poisson_AIC=AIC(m9_p_m))
+
+## MET CENTRAL & MUJER = POISSON
+###########################################################################
+```
+
+```{r}
+# Exploración de datos
+d <- subset(datos.completos, Servicio_salud == "Servicio de Salud Metropolitano Central" & SEXO == "Hombre")
+plot(density(d$casos_aprox),main = "", xlab = "Número de casos", ylab = "Frecuencia",lwd=2)
+hist(d$casos_aprox, probability=T,main="Histograma",ylab="Densidad" ,xlab="Número de casos",col="pink")
+lines(density(d$casos_aprox))
+mean(d$casos_aprox)
+var(d$casos_aprox)
+###########################################################################
+
+## modelo Poisson hombre
+m9_p_h <- glm2::glm2(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  family = "poisson",
+  data = subset(datos.completos, Servicio_salud == "Servicio de Salud Metropolitano Central" & SEXO == "Hombre"))
+summary(m9_p_h)
+AER::dispersiontest(m9_p_h) # no hay evidenicia de sobredispersión
+par(mfrow=c(2,2))
+plot(m9_p_h)
+
+## modelo bin-neg hombre
+m9_bn_h <- MASS::glm.nb(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  data =subset(datos.completos, Servicio_salud == "Servicio de Salud Metropolitano Central" & SEXO == "Hombre"))
+summary(m9_bn_h)
+plot(m9_bn_h)
+###########################################################################
+
+# comparación de modelos hombre
+
+## test de razon de verosimilitudes
+pchisq(2 * (logLik(m9_bn_h) - logLik(m9_p_h)), df = 1, lower.tail = FALSE)
+lrtest(m9_bn_h, m9_p_h)
+pscl::odTest(m9_bn_h)
+
+
+### por AIC y BIC
+c(BN_AIC=AIC(m9_bn_h), Poisson_AIC=AIC(m9_p_h))
+
+## MET CENTRAL & HOMBRE = POISSON
+###########################################################################
+```
+
+## 10. Servicio de Salud Metropolitano Norte
+
+```{r}
+# Exploración de datos
+d <- subset(datos.completos, Servicio_salud == "Servicio de Salud Metropolitano Norte" & SEXO == "Mujer")
+plot(density(d$casos_aprox),main = "", xlab = "Número de casos", ylab = "Frecuencia",lwd=2)
+hist(d$casos_aprox, probability=T,main="Histograma",ylab="Densidad" ,xlab="Número de casos",col="pink")
+lines(density(d$casos_aprox))
+mean(d$casos_aprox)
+var(d$casos_aprox)
+###########################################################################
+
+# Modelado estadístico
+
+## 1. modelo Poisson mujer
+m10_p_m <- glm2::glm2(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  family = "poisson",
+  data = subset(datos.completos, Servicio_salud == "Servicio de Salud Metropolitano Norte" & SEXO == "Mujer"))
+summary(m10_p_m)
+AER::dispersiontest(m10_p_m) # no hay evidencia de sobredispersión
+par(mfrow=c(2,2))
+plot(m10_p_m)
+
+## 2. modelo bin-neg mujer
+m10_bn_m <- MASS::glm.nb(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  data =subset(datos.completos, Servicio_salud == "Servicio de Salud Metropolitano Norte" & SEXO == "Mujer"))
+summary(m10_bn_m)
+plot(m10_p_m)
+###########################################################################
+
+# comparación de modelos mujer
+
+## test de razon de verosimilitudes
+pchisq(2 * (logLik(m10_bn_m) - logLik(m10_p_m)), df = 1, lower.tail = FALSE)
+lrtest(m10_bn_m, m10_p_m)
+pscl::odTest(m10_bn_m)
+
+### por AIC y BIC
+c(BN_AIC=AIC(m10_bn_m), Poisson_AIC=AIC(m10_p_m))
+
+## MET NORTE & MUJER = POISSON
+###########################################################################
+```
+
+```{r}
+# Exploración de datos
+d <- subset(datos.completos, Servicio_salud == "Servicio de Salud Metropolitano Norte" & SEXO == "Hombre")
+plot(density(d$casos_aprox),main = "", xlab = "Número de casos", ylab = "Frecuencia",lwd=2)
+hist(d$casos_aprox, probability=T,main="Histograma",ylab="Densidad" ,xlab="Número de casos",col="pink")
+lines(density(d$casos_aprox))
+mean(d$casos_aprox)
+var(d$casos_aprox)
+###########################################################################
+
+# Modelado estadístico
+
+## 1. modelo Poisson hombre
+m10_p_h <- glm2::glm2(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  family = "poisson",
+  data = subset(datos.completos, Servicio_salud == "Servicio de Salud Metropolitano Norte" & SEXO == "Hombre"))
+summary(m10_p_h)
+AER::dispersiontest(m10_p_h) # no hay evidencia de sobredispersión
+par(mfrow=c(2,2))
+plot(m10_p_h)
+
+## 2. modelo bin-neg hombre
+m10_bn_h <- MASS::glm.nb(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  data =subset(datos.completos, Servicio_salud == "Servicio de Salud Metropolitano Norte" & SEXO == "Hombre"))
+summary(m10_bn_h)
+plot(m10_bn_h)
+###########################################################################
+
+## comparación de modelos hombre
+
+### test de razon de verosimilitudes
+pchisq(2 * (logLik(m10_bn_h) - logLik(m10_p_h)), df = 1, lower.tail = FALSE)
+lrtest(m10_bn_h, m10_p_h)
+pscl::odTest(m10_bn_h)
+
+### por AIC y BIC
+c(BN_AIC=AIC(m10_bn_h), Poisson_AIC=AIC(m10_p_h))
+
+## MET NORTE & HOMBRE = POISSON
+###########################################################################
+```
+
+## 11. Servicio de Salud Metropolitano Occidente
+
+```{r}
+# Exploración de datos
+d <- subset(datos.completos, Servicio_salud == "Servicio de Salud Metropolitano Occidente" & SEXO == "Mujer")
+plot(density(d$casos_aprox),main = "", xlab = "Número de casos", ylab = "Frecuencia",lwd=2)
+hist(d$casos_aprox, probability=T,main="Histograma",ylab="Densidad" ,xlab="Número de casos",col="pink")
+lines(density(d$casos_aprox))
+mean(d$casos_aprox)
+var(d$casos_aprox)
+###########################################################################
+
+# modelado estadístico
+
+## modelo Poisson mujer
+m11_p_m <- glm2::glm2(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  family = "poisson",
+  data = subset(datos.completos, Servicio_salud == "Servicio de Salud Metropolitano Occidente" & SEXO == "Mujer"))
+summary(m11_p_m)
+AER::dispersiontest(m11_p_m) # no hay evidencia de sobredispersión
+par(mfrow=c(2,2))
+plot(m11_p_m)
+
+## modelo bin-neg mujer
+m11_bn_m <- MASS::glm.nb(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  data =subset(datos.completos, Servicio_salud == "Servicio de Salud Metropolitano Occidente" & SEXO == "Mujer"))
+summary(m11_bn_m)
+plot(m11_bn_m)
+###########################################################################
+
+## comparación de modelos mujer
+
+### test de razon de verosimilitudes
+pchisq(2 * (logLik(m11_bn_m) - logLik(m11_p_m)), df = 1, lower.tail = FALSE)
+lrtest(m11_bn_m, m11_p_m)
+pscl::odTest(m11_bn_m)
+
+### por AIC y BIC
+c(BN_AIC=AIC(m11_bn_m), Poisson_AIC=AIC(m11_p_m))
+
+## MET OCC & MUJER = POISSON
+###########################################################################
+```
+
+```{r}
+# Exploración de datos
+d <- subset(datos.completos, Servicio_salud == "Servicio de Salud Metropolitano Occidente" & SEXO == "Hombre")
+plot(density(d$casos_aprox),main = "", xlab = "Número de casos", ylab = "Frecuencia",lwd=2)
+hist(d$casos_aprox, probability=T,main="Histograma",ylab="Densidad" ,xlab="Número de casos",col="pink")
+lines(density(d$casos_aprox))
+mean(d$casos_aprox)
+var(d$casos_aprox)
+###########################################################################
+
+## modelo Poisson hombre
+m11_p_h <- glm2::glm2(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  family = "poisson",
+  data = subset(datos.completos, Servicio_salud == "Servicio de Salud Metropolitano Occidente" & SEXO == "Hombre"))
+summary(m11_p_h)
+AER::dispersiontest(m11_p_h) # no hay evidencia de sobredispersión
+par(mfrow=c(2,2))
+plot(m11_p_h)
+
+## modelo bin-neg hombre
+m11_bn_h <- MASS::glm.nb(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  data =subset(datos.completos, Servicio_salud == "Servicio de Salud Metropolitano Occidente" & SEXO == "Hombre"))
+summary(m11_bn_h)
+plot(m11_bn_h)
+
+## comparación de modelos hombre
+
+### test de razon de verosimilitudes
+pchisq(2 * (logLik(m11_bn_h) - logLik(m11_p_h)), df = 1, lower.tail = FALSE)
+lrtest(m11_bn_h, m11_p_h)
+pscl::odTest(m11_bn_h)
+
+### por AIC y BIC
+c(BN_AIC=AIC(m11_bn_h), Poisson_AIC=AIC(m11_p_h))
+
+## MET OCC & HOMBRE = POISSON
+```
+
+## 12. Servicio de Salud Metropolitano Oriente
+
+```{r}
+# Exploración de datos
+d <- subset(datos.completos, Servicio_salud == "Servicio de Salud Metropolitano Oriente" & SEXO == "Mujer")
+plot(density(d$casos_aprox),main = "", xlab = "Número de casos", ylab = "Frecuencia",lwd=2)
+hist(d$casos_aprox, probability=T,main="Histograma",ylab="Densidad" ,xlab="Número de casos",col="pink")
+lines(density(d$casos_aprox))
+mean(d$casos_aprox)
+var(d$casos_aprox)
+###########################################################################
+
+## modelo Poisson mujer
+m12_p_m <- glm2::glm2(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  family = "poisson",
+  data = subset(datos.completos, Servicio_salud == "Servicio de Salud Metropolitano Oriente" & SEXO == "Mujer"))
+summary(m12_p_m)
+AER::dispersiontest(m12_p_m) # no hay evidencia de sobredispersión
+par(mfrow=c(2,2))
+plot(m12_p_m)
+
+## modelo bin-neg mujer
+m12_bn_m <- MASS::glm.nb(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  data =subset(datos.completos, Servicio_salud == "Servicio de Salud Metropolitano Oriente" & SEXO == "Mujer"))
+summary(m12_bn_m)
+plot(m12_bn_m)
+###########################################################################
+
+## comparación de modelos mujer
+
+### test de razon de verosimilitudes
+pchisq(2 * (logLik(m12_bn_m) - logLik(m12_p_m)), df = 1, lower.tail = FALSE)
+lrtest(m12_bn_m, m12_p_m)
+pscl::odTest(m12_bn_m)
+
+### por AIC y BIC
+c(BN_AIC=AIC(m12_bn_m), Poisson_AIC=AIC(m12_p_m))
+
+## MET ORI & MUJER = POISSON
+###########################################################################
+```
+
+```{r}
+# Exploración de datos
+d <- subset(datos.completos, Servicio_salud == "Servicio de Salud Metropolitano Oriente" & SEXO == "Hombre")
+plot(density(d$casos_aprox),main = "", xlab = "Número de casos", ylab = "Frecuencia",lwd=2)
+hist(d$casos_aprox, probability=T,main="Histograma",ylab="Densidad" ,xlab="Número de casos",col="pink")
+lines(density(d$casos_aprox))
+mean(d$casos_aprox)
+var(d$casos_aprox)
+###########################################################################
+
+## modelo Poisson hombre
+m12_p_h <- glm2::glm2(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  family = "poisson",
+  data = subset(datos.completos, Servicio_salud == "Servicio de Salud Metropolitano Oriente" & SEXO == "Hombre"))
+summary(m12_p_h)
+AER::dispersiontest(m12_p_h) # no hay evidencia de sobredispersión
+par(mfrow=c(2,2))
+plot(m12_p_h)
+
+## modelo bin-neg hombre
+m12_bn_h <- MASS::glm.nb(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  data =subset(datos.completos, Servicio_salud == "Servicio de Salud Metropolitano Oriente" & SEXO == "Hombre"))
+summary(m12_bn_h)
+plot(m12_bn_h)
+
+## comparación de modelos hombre
+
+### test de razon de verosimilitudes
+pchisq(2 * (logLik(m12_bn_h) - logLik(m12_p_h)), df = 1, lower.tail = FALSE)
+lrtest(m12_bn_h, m12_p_h)
+pscl::odTest(m12_bn_h)
+
+### por AIC y BIC
+c(BN_AIC=AIC(m12_bn_h), Poisson_AIC=AIC(m12_p_h))
+
+## MET ORI & HOMBRE = POISSON
+```
+
+## 13. Servicio de Salud Metropolitano Sur
+
+```{r}
+# Exploración de datos
+d <- subset(datos.completos, Servicio_salud == "Servicio de Salud Metropolitano Sur" & SEXO == "Mujer")
+plot(density(d$casos_aprox),main = "", xlab = "Número de casos", ylab = "Frecuencia",lwd=2)
+hist(d$casos_aprox, probability=T,main="Histograma",ylab="Densidad" ,xlab="Número de casos",col="pink")
+lines(density(d$casos_aprox))
+mean(d$casos_aprox)
+var(d$casos_aprox)
+###########################################################################
+
+## modelo Poisson mujer
+m13_p_m <- glm2::glm2(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  family = "poisson",
+  data = subset(datos.completos, Servicio_salud == "Servicio de Salud Metropolitano Sur" & SEXO == "Mujer"))
+summary(m13_p_m)
+AER::dispersiontest(m13_p_m) # no hay evidencia de sobredispersión
+par(mfrow=c(2,2))
+plot(m13_p_m)
+
+## modelo bin-neg mujer
+m13_bn_m <- MASS::glm.nb(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  data =subset(datos.completos, Servicio_salud == "Servicio de Salud Metropolitano Sur" & SEXO == "Mujer"))
+summary(m13_bn_m)
+plot(m13_bn_m)
+
+###########################################################################
+
+# comparación de modelos mujer
+
+### 1. test de razon de verosimilitudes
+pchisq(2 * (logLik(m13_bn_m) - logLik(m13_p_m)), df = 1, lower.tail = FALSE)
+lrtest(m13_bn_m, m13_p_m)
+pscl::odTest(m13_bn_m)
+
+### por AIC y BIC
+c(BN_AIC=AIC(m13_bn_m), Poisson_AIC=AIC(m13_p_m))
+
+## MET SUR & MUJER = POISSON
+###########################################################################
+```
+
+```{r}
+# Exploración de datos
+d <- subset(datos.completos, Servicio_salud == "Servicio de Salud Metropolitano Sur" & SEXO == "Hombre")
+plot(density(d$casos_aprox),main = "", xlab = "Número de casos", ylab = "Frecuencia",lwd=2)
+hist(d$casos_aprox, probability=T,main="Histograma",ylab="Densidad" ,xlab="Número de casos",col="pink")
+lines(density(d$casos_aprox))
+mean(d$casos_aprox)
+var(d$casos_aprox)
+###########################################################################
+
+# Modelado estadístico
+
+## modelo Poisson hombre
+m13_p_h <- glm2::glm2(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  family = "poisson",
+  data = subset(datos.completos, Servicio_salud == "Servicio de Salud Metropolitano Sur" & SEXO == "Hombre"))
+summary(m13_p_h)
+AER::dispersiontest(m13_p_h) # no hay evidencia de sobredispersión
+par(mfrow=c(2,2))
+plot(m13_p_h)
+
+## modelo bin-neg hombre
+m13_bn_h <- MASS::glm.nb(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  data =subset(datos.completos, Servicio_salud == "Servicio de Salud Metropolitano Sur" & SEXO == "Hombre"))
+summary(m13_bn_h)
+plot(m13_bn_h)
+
+## comparación de modelos hombre
+
+### test de razon de verosimilitudes
+pchisq(2 * (logLik(m13_bn_h) - logLik(m13_p_h)), df = 1, lower.tail = FALSE)
+lrtest(m13_bn_h, m13_p_h)
+pscl::odTest(m13_bn_h)
+
+### por AIC y BIC
+c(BN_AIC=AIC(m13_bn_h), Poisson_AIC=AIC(m13_p_h))
+
+## MET SUR & HOMBRE = POISSON
+```
+
+## 14. Servicio de Salud Metropolitano Sur Oriente
+
+```{r}
+# Exploración de datos
+d <- subset(datos.completos, Servicio_salud == "Servicio de Salud Metropolitano Sur Oriente" & SEXO == "Mujer")
+plot(density(d$casos_aprox),main = "", xlab = "Número de casos", ylab = "Frecuencia",lwd=2)
+hist(d$casos_aprox, probability=T,main="Histograma",ylab="Densidad" ,xlab="Número de casos",col="pink")
+lines(density(d$casos_aprox))
+mean(d$casos_aprox)
+var(d$casos_aprox)
+###########################################################################
+
+## modelo Poisson mujer
+m14_p_m <- glm2::glm2(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  family = "poisson",
+  data = subset(datos.completos, Servicio_salud == "Servicio de Salud Metropolitano Sur Oriente" & SEXO == "Mujer"))
+summary(m14_p_m)
+AER::dispersiontest(m14_p_m) # no hay evidencia de sobredispersión
+par(mfrow=c(2,2))
+plot(m14_p_m)
+
+## modelo bin-neg mujer
+m14_bn_m <- MASS::glm.nb(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  data =subset(datos.completos, Servicio_salud == "Servicio de Salud Metropolitano Sur Oriente" & SEXO == "Mujer"))
+summary(m14_bn_m)
+plot(m14_bn_m)
+
+###########################################################################
+
+## comparación de modelos mujer
+
+### test de razon de verosimilitudes
+pchisq(2 * (logLik(m14_bn_m) - logLik(m14_p_m)), df = 1, lower.tail = FALSE)
+lrtest(m14_bn_m, m14_p_m)
+pscl::odTest(m14_bn_m)
+
+### por AIC y BIC
+c(BN_AIC=AIC(m14_bn_m), Poisson_AIC=AIC(m14_p_m))
+
+## MET SUR ORI & MUJER = POISSON
+###########################################################################
+```
+
+```{r}
+# Exploración de datos
+d <- subset(datos.completos, Servicio_salud == "Servicio de Salud Metropolitano Sur Oriente" & SEXO == "Hombre")
+plot(density(d$casos_aprox),main = "", xlab = "Número de casos", ylab = "Frecuencia",lwd=2)
+hist(d$casos_aprox, probability=T,main="Histograma",ylab="Densidad" ,xlab="Número de casos",col="pink")
+lines(density(d$casos_aprox))
+mean(d$casos_aprox)
+var(d$casos_aprox)
+###########################################################################
+
+## modelo Poisson hombre
+m14_p_h <- glm2::glm2(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  family = "poisson",
+  data = subset(datos.completos, Servicio_salud == "Servicio de Salud Metropolitano Sur Oriente" & SEXO == "Hombre"))
+summary(m14_p_h)
+AER::dispersiontest(m14_p_h) # no hay evidencia de sobredispersión
+par(mfrow=c(2,2))
+plot(m14_p_h)
+
+## modelo bin-neg hombre
+m14_bn_h <- MASS::glm.nb(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  data =subset(datos.completos, Servicio_salud == "Servicio de Salud Metropolitano Sur Oriente" & SEXO == "Hombre"))
+summary(m14_bn_h)
+plot(m14_bn_h)
+
+###########################################################################
+
+## comparación de modelos hombre
+
+### test de razon de verosimilitudes
+pchisq(2 * (logLik(m14_bn_h) - logLik(m14_p_h)), df = 1, lower.tail = FALSE)
+lrtest(m14_bn_h, m14_p_h)
+pscl::odTest(m14_bn_h)
+
+### por AIC y BIC
+c(BN_AIC=AIC(m14_bn_h), Poisson_AIC=AIC(m14_p_h))
+
+## MET SUR ORI & HOMBRE = POISSON
+###########################################################################
+```
+
+## 15. Servicio de Salud Del Libertador B.O'Higgins
+
+```{r}
+# Exploración de datos
+d <- subset(datos.completos, Servicio_salud == "Servicio de Salud Del Libertador B.O'Higgins" & SEXO == "Mujer")
+plot(density(d$casos_aprox),main = "", xlab = "Número de casos", ylab = "Frecuencia",lwd=2)
+hist(d$casos_aprox, probability=T,main="Histograma",ylab="Densidad" ,xlab="Número de casos",col="pink")
+lines(density(d$casos_aprox))
+mean(d$casos_aprox)
+var(d$casos_aprox)
+###########################################################################
+
+## modelo Poisson mujer
+m15_p_m <- glm2::glm2(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  family = "poisson",
+  data = subset(datos.completos, Servicio_salud == "Servicio de Salud Del Libertador B.O'Higgins" & SEXO == "Mujer"))
+summary(m15_p_m)
+AER::dispersiontest(m15_p_m) # no hay evidencia de sobredispersión
+par(mfrow=c(2,2))
+plot(m15_p_m)
+
+## modelo bin-neg mujer
+m15_bn_m <- MASS::glm.nb(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  data =subset(datos.completos, Servicio_salud == "Servicio de Salud Del Libertador B.O'Higgins" & SEXO == "Mujer"))
+summary(m15_bn_m)
+plot(m15_bn_m)
+###########################################################################
+
+## comparación de modelos mujer
+
+### test de razon de verosimilitudes
+pchisq(2 * (logLik(m15_bn_m) - logLik(m15_p_m)), df = 1, lower.tail = FALSE)
+lrtest(m15_bn_m, m15_p_m)
+pscl::odTest(m15_bn_m)
+
+### por AIC y BIC
+c(BN_AIC=AIC(m15_bn_m), Poisson_AIC=AIC(m15_p_m))
+
+## OHIG & MUJER = POISSON
+###########################################################################
+```
+
+```{r}
+# Exploración de datos
+d <- subset(datos.completos, Servicio_salud == "Servicio de Salud Del Libertador B.O'Higgins" & SEXO == "Hombre")
+plot(density(d$casos_aprox),main = "", xlab = "Número de casos", ylab = "Frecuencia",lwd=2)
+hist(d$casos_aprox, probability=T,main="Histograma",ylab="Densidad" ,xlab="Número de casos",col="pink")
+lines(density(d$casos_aprox))
+mean(d$casos_aprox)
+var(d$casos_aprox)
+###########################################################################
+
+## modelo Poisson hombre
+m15_p_h <- glm2::glm2(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  family = "poisson",
+  data = subset(datos.completos, Servicio_salud == "Servicio de Salud Del Libertador B.O'Higgins" & SEXO == "Hombre"))
+summary(m15_p_h)
+AER::dispersiontest(m15_p_h) # no hay evidencia de sobredispersión
+par(mfrow=c(2,2))
+plot(m15_p_h)
+
+## modelo bin-neg hombre
+m15_bn_h <- MASS::glm.nb(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  data =subset(datos.completos, Servicio_salud == "Servicio de Salud Del Libertador B.O'Higgins" & SEXO == "Hombre"))
+summary(m15_bn_h)
+plot(m15_bn_h)
+
+## comparación de modelos hombre
+
+### test de razon de verosimilitudes
+pchisq(2 * (logLik(m15_bn_h) - logLik(m15_p_h)), df = 1, lower.tail = FALSE)
+lrtest(m15_bn_h, m15_p_h)
+pscl::odTest(m15_bn_h)
+
+### por AIC y BIC
+c(BN_AIC=AIC(m15_bn_h), Poisson_AIC=AIC(m15_p_h))
+
+## OHIG & HOMBRE = POISSON
+```
+
+## 16. Servicio de Salud Del Maule
+
+```{r}
+# Exploración de datos
+d <- subset(datos.completos, Servicio_salud == "Servicio de Salud Del Maule" & SEXO == "Mujer")
+plot(density(d$casos_aprox),main = "", xlab = "Número de casos", ylab = "Frecuencia",lwd=2)
+hist(d$casos_aprox, probability=T,main="Histograma",ylab="Densidad" ,xlab="Número de casos",col="pink")
+lines(density(d$casos_aprox))
+mean(d$casos_aprox)
+var(d$casos_aprox)
+###########################################################################
+
+## modelo Poisson mujer
+m16_p_m <- glm2::glm2(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  family = "poisson",
+  data = subset(datos.completos, Servicio_salud == "Servicio de Salud Del Maule" & SEXO == "Mujer"))
+summary(m16_p_m)
+AER::dispersiontest(m16_p_m) # no hay evidencia de sobredispersión
+par(mfrow=c(2,2))
+plot(m16_p_m)
+
+## modelo bin-neg mujer
+m16_bn_m <- MASS::glm.nb(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  data =subset(datos.completos, Servicio_salud == "Servicio de Salud Del Maule" & SEXO == "Mujer"))
+summary(m16_bn_m)
+par(mfrow=c(2,2))
+
+## comparación de modelos mujer
+
+### test de razon de verosimilitudes
+pchisq(2 * (logLik(m16_bn_m) - logLik(m16_p_m)), df = 1, lower.tail = FALSE)
+## loglik es de 1 -> no hay evidencia para rechazar que Poisson sea mejor
+## parametro de sobre dispersión = 79207 
+
+### por AIC y BIC
+c(BN_AIC=AIC(m16_bn_m), Poisson_AIC=AIC(m16_p_m))
+
+## MAULE & MUJER = POISSON
+###########################################################################
+```
+
+```{r}
+# Exploración de datos
+d <- subset(datos.completos, Servicio_salud == "Servicio de Salud Del Maule" & SEXO == "Hombre")
+plot(density(d$casos_aprox),main = "", xlab = "Número de casos", ylab = "Frecuencia",lwd=2)
+hist(d$casos_aprox, probability=T,main="Histograma",ylab="Densidad" ,xlab="Número de casos",col="pink")
+lines(density(d$casos_aprox))
+mean(d$casos_aprox)
+var(d$casos_aprox)
+###########################################################################
+
+## modelo Poisson hombre
+m16_p_h <- glm2::glm2(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  family = "poisson",
+  data = subset(datos.completos, Servicio_salud == "Servicio de Salud Del Maule" & SEXO == "Hombre"))
+summary(m16_p_h)
+AER::dispersiontest(m16_p_h) # no hay evidencia de sobredispersión
+par(mfrow=c(2,2))
+plot(m16_p_h)
+
+## modelo bin-neg hombre
+m16_bn_h <- MASS::glm.nb(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  data =subset(datos.completos, Servicio_salud == "Servicio de Salud Del Maule" & SEXO == "Hombre"))
+summary(m16_bn_h)
+
+## comparación de modelos hombre
+
+### test de razon de verosimilitudes
+pchisq(2 * (logLik(m16_bn_h) - logLik(m16_p_h)), df = 1, lower.tail = FALSE)
+## loglik es de 1 -> no hay evidencia para rechazar que Poisson sea mejor
+## el parámetro de sobredispersión = 153644 
+
+### por AIC y BIC
+c(BN_AIC=AIC(m16_bn_h), Poisson_AIC=AIC(m16_p_h))
+
+## MAULE & HOMBRE = POISSON
+```
+
+## 17. Servicio de Salud Arauco
+
+```{r}
+# Exploración de datos
+d <- subset(datos.completos, Servicio_salud == "Servicio de Salud Arauco" & SEXO == "Mujer")
+plot(density(d$casos_aprox),main = "", xlab = "Número de casos", ylab = "Frecuencia",lwd=2)
+hist(d$casos_aprox, probability=T,main="Histograma",ylab="Densidad" ,xlab="Número de casos",col="pink")
+lines(density(d$casos_aprox))
+mean(d$casos_aprox)
+var(d$casos_aprox)
+###########################################################################
+
+## modelo Poisson mujer
+m17_p_m <- glm2::glm2(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  family = "poisson",
+  data = subset(datos.completos, Servicio_salud == "Servicio de Salud Arauco" & SEXO == "Mujer"))
+summary(m17_p_m)
+AER::dispersiontest(m17_p_m) # no hay evidencia de sobredispersión
+par(mfrow=c(2,2))
+plot(m17_p_m)
+
+## modelo bin-neg mujer
+m17_bn_m <- MASS::glm.nb(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  data =subset(datos.completos, Servicio_salud == "Servicio de Salud Arauco" & SEXO == "Mujer"))
+summary(m17_bn_m)
+
+
+## comparación de modelos mujer
+
+### test de razon de verosimilitudes
+pchisq(2 * (logLik(m17_bn_m) - logLik(m17_p_m)), df = 1, lower.tail = FALSE)
+## loglik es de 1 -> no hay evidencia para rechazar que Poisson sea mejor
+## parametro de sobre dispersión = 88014
+
+### por AIC y BIC
+c(BN_AIC=AIC(m17_bn_m), Poisson_AIC=AIC(m17_p_m))
+
+## ARAUCO & MUJER = POISSON
+###########################################################################
+```
+
+```{r}
+# Exploración de datos
+d <- subset(datos.completos, Servicio_salud == "Servicio de Salud Arauco" & SEXO == "Hombre")
+plot(density(d$casos_aprox),main = "", xlab = "Número de casos", ylab = "Frecuencia",lwd=2)
+hist(d$casos_aprox, probability=T,main="Histograma",ylab="Densidad" ,xlab="Número de casos",col="pink")
+lines(density(d$casos_aprox))
+mean(d$casos_aprox)
+var(d$casos_aprox)
+###########################################################################
+
+## modelo Poisson hombre
+m17_p_h <- glm2::glm2(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  family = "poisson",
+  data = subset(datos.completos, Servicio_salud == "Servicio de Salud Arauco" & SEXO == "Hombre"))
+summary(m17_p_h)
+AER::dispersiontest(m17_p_h) # no hay evidencia de sobredispersión
+par(mfrow=c(2,2))
+plot(m17_p_h)
+
+## modelo bin-neg hombre
+m17_bn_h <- MASS::glm.nb(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  data =subset(datos.completos, Servicio_salud == "Servicio de Salud Arauco" & SEXO == "Hombre"))
+summary(m17_bn_h)
+
+## comparación de modelos hombre
+
+### test de razon de verosimilitudes
+pchisq(2 * (logLik(m17_bn_h) - logLik(m17_p_h)), df = 1, lower.tail = FALSE)
+## loglik es de 0.5680556 -> no hay evidencia para rechazar que Poisson sea mejor 
+## el parámetro de sobredispersión = 60 
+
+### por AIC y BIC
+c(BN_AIC=AIC(m17_bn_h), Poisson_AIC=AIC(m17_p_h))
+
+## ARAUCO & HOMBRE = POISSON
+```
+
+## 18. Servicio de Salud Biobío
+
+```{r}
+# Exploración de datos
+d <- subset(datos.completos, Servicio_salud == "Servicio de Salud Biobío" & SEXO == "Mujer")
+plot(density(d$casos_aprox),main = "", xlab = "Número de casos", ylab = "Frecuencia",lwd=2)
+hist(d$casos_aprox, probability=T,main="Histograma",ylab="Densidad" ,xlab="Número de casos",col="pink")
+lines(density(d$casos_aprox))
+mean(d$casos_aprox)
+var(d$casos_aprox)
+###########################################################################
+
+## modelo Poisson mujer
+m18_p_m <- glm2::glm2(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  family = "poisson",
+  data = subset(datos.completos, Servicio_salud == "Servicio de Salud Biobío" & SEXO == "Mujer"))
+summary(m18_p_m)
+AER::dispersiontest(m18_p_m) # no hay evidencia de sobredispersión
+par(mfrow=c(2,2))
+plot(m18_p_m)
+
+## modelo bin-neg mujer
+m18_bn_m <- MASS::glm.nb(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  data =subset(datos.completos, Servicio_salud == "Servicio de Salud Biobío" & SEXO == "Mujer"))
+summary(m18_bn_m)
+
+
+## comparación de modelos mujer
+
+### test de razon de verosimilitudes
+pchisq(2 * (logLik(m18_bn_m) - logLik(m18_p_m)), df = 1, lower.tail = FALSE)
+## loglik es de 1 -> no hay evidencia para rechazar que Poisson sea mejor
+## parametro de sobre dispersión = 112436
+
+### por AIC y BIC
+c(BN_AIC=AIC(m18_bn_m), Poisson_AIC=AIC(m18_p_m))
+
+## BIOBIO & MUJER = POISSON
+###########################################################################
+```
+
+```{r}
+# Exploración de datos
+d <- subset(datos.completos, Servicio_salud == "Servicio de Salud Biobío" & SEXO == "Hombre")
+plot(density(d$casos_aprox),main = "", xlab = "Número de casos", ylab = "Frecuencia",lwd=2)
+hist(d$casos_aprox, probability=T,main="Histograma",ylab="Densidad" ,xlab="Número de casos",col="pink")
+lines(density(d$casos_aprox))
+mean(d$casos_aprox)
+var(d$casos_aprox)
+###########################################################################
+
+## modelo Poisson hombre
+m18_p_h <- glm2::glm2(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  family = "poisson",
+  data = subset(datos.completos, Servicio_salud == "Servicio de Salud Biobío" & SEXO == "Hombre"))
+summary(m18_p_h)
+AER::dispersiontest(m18_p_h) # no hay evidencia de sobredispersión
+par(mfrow=c(2,2))
+plot(m18_p_h)
+
+## modelo bin-neg hombre
+m18_bn_h <- MASS::glm.nb(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  data =subset(datos.completos, Servicio_salud == "Servicio de Salud Biobío" & SEXO == "Hombre"))
+summary(m18_bn_h)
+
+## comparación de modelos hombre
+
+### test de razon de verosimilitudes
+pchisq(2 * (logLik(m18_bn_h) - logLik(m18_p_h)), df = 1, lower.tail = FALSE)
+## loglik es de 0.6194942 -> no hay evidencia para rechazar que Poisson sea mejor
+## el parámetro de sobredispersión = 214 
+
+### por AIC y BIC
+c(BN_AIC=AIC(m18_bn_h), Poisson_AIC=AIC(m18_p_h))
+
+## BIOBIO & HOMBRE = POISSON
+```
+
+## 19. Servicio de Salud Concepción
+
+```{r}
+# Exploración de datos
+d <- subset(datos.completos, Servicio_salud == "Servicio de Salud Concepción" & SEXO == "Mujer")
+plot(density(d$casos_aprox),main = "", xlab = "Número de casos", ylab = "Frecuencia",lwd=2)
+hist(d$casos_aprox, probability=T,main="Histograma",ylab="Densidad" ,xlab="Número de casos",col="pink")
+lines(density(d$casos_aprox))
+mean(d$casos_aprox)
+var(d$casos_aprox)
+###########################################################################
+
+## modelo Poisson mujer
+m19_p_m <- glm2::glm2(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  family = "poisson",
+  data = subset(datos.completos, Servicio_salud == "Servicio de Salud Concepción" & SEXO == "Mujer"))
+summary(m19_p_m)
+AER::dispersiontest(m19_p_m) # no hay evidencia de sobredispersión
+par(mfrow=c(2,2))
+plot(m19_p_m)
+
+## modelo bin-neg mujer
+m19_bn_m <- MASS::glm.nb(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  data =subset(datos.completos, Servicio_salud == "Servicio de Salud Concepción" & SEXO == "Mujer"))
+summary(m19_bn_m)
+
+
+## comparación de modelos mujer
+
+### test de razon de verosimilitudes
+pchisq(2 * (logLik(m19_bn_m) - logLik(m19_p_m)), df = 1, lower.tail = FALSE)
+## loglik es de 0.2217378 -> no hay evidencia para rechazar que Poisson sea mejor
+## parametro de sobre dispersión = 70.1
+
+### por AIC y BIC
+c(BN_AIC=AIC(m19_bn_m), Poisson_AIC=AIC(m19_p_m))
+
+## CONCE & MUJER = POISSON
+###########################################################################
+```
+
+```{r}
+# Exploración de datos
+d <- subset(datos.completos, Servicio_salud== "Servicio de Salud Concepción" & SEXO == "Hombre")
+plot(density(d$casos_aprox),main = "", xlab = "Número de casos", ylab = "Frecuencia",lwd=2)
+hist(d$casos_aprox, probability=T,main="Histograma",ylab="Densidad" ,xlab="Número de casos",col="pink")
+lines(density(d$casos_aprox))
+mean(d$casos_aprox)
+var(d$casos_aprox)
+###########################################################################
+## modelo Poisson hombre
+m19_p_h <- glm2::glm2(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  family = "poisson",
+  data = subset(datos.completos, Servicio_salud== "Servicio de Salud Concepción" & SEXO == "Hombre"))
+summary(m19_p_h)
+AER::dispersiontest(m19_p_h) # no hay evidencia de sobredispersión
+par(mfrow=c(2,2))
+plot(m19_p_h)
+
+## modelo bin-neg hombre
+m19_bn_h <- MASS::glm.nb(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  data =subset(datos.completos, Servicio_salud == "Servicio de Salud Concepción" & SEXO == "Hombre"))
+summary(m19_bn_h)
+
+## comparación de modelos hombre
+
+### test de razon de verosimilitudes
+pchisq(2 * (logLik(m19_bn_h) - logLik(m19_p_h)), df = 1, lower.tail = FALSE)
+## loglik es de 0.10 -> no hay evidencia para rechazar que Poisson sea mejor
+## el parámetro de sobredispersión = 79.8
+
+### por AIC y BIC
+c(BN_AIC=AIC(m19_bn_h), Poisson_AIC=AIC(m19_p_h))
+
+## CONCE & HOMBRE = POISSON
+```
+
+## 20. Servicio de Salud Talcahuano
+
+```{r}
+# Exploración de datos
+d <- subset(datos.completos, Servicio_salud == "Servicio de Salud Talcahuano" & SEXO == "Mujer")
+plot(density(d$casos_aprox),main = "", xlab = "Número de casos", ylab = "Frecuencia",lwd=2)
+hist(d$casos_aprox, probability=T,main="Histograma",ylab="Densidad" ,xlab="Número de casos",col="pink")
+lines(density(d$casos_aprox))
+mean(d$casos_aprox)
+var(d$casos_aprox)
+###########################################################################
+
+## modelo Poisson mujer
+m20_p_m <- glm2::glm2(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  family = "poisson",
+  data = subset(datos.completos, Servicio_salud == "Servicio de Salud Talcahuano" & SEXO == "Mujer"))
+summary(m20_p_m)
+AER::dispersiontest(m20_p_m) # no hay evidencia de sobredispersión
+par(mfrow=c(2,2))
+plot(m20_p_m)
+
+## modelo bin-neg mujer
+m20_bn_m <- MASS::glm.nb(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  data =subset(datos.completos, Servicio_salud == "Servicio de Salud Talcahuano" & SEXO == "Mujer"))
+summary(m20_bn_m)
+
+
+## comparación de modelos mujer
+
+### test de razon de verosimilitudes
+pchisq(2 * (logLik(m20_bn_m) - logLik(m20_p_m)), df = 1, lower.tail = FALSE)
+## loglik es de 0.0014 -> hay evidencia para rechazar que Poisson es mejor
+## parametro de sobre dispersión = 18.10 
+
+### por AIC y BIC
+c(BN_AIC=AIC(m20_bn_m), Poisson_AIC=AIC(m20_p_m))
+
+## TALCAHUANO & MUJER = BN
+###########################################################################
+```
+
+```{r}
+# Exploración de datos
+d <- subset(datos.completos, Servicio_salud == "Servicio de Salud Talcahuano" & SEXO == "Hombre")
+plot(density(d$casos_aprox),main = "", xlab = "Número de casos", ylab = "Frecuencia",lwd=2)
+hist(d$casos_aprox, probability=T,main="Histograma",ylab="Densidad" ,xlab="Número de casos",col="pink")
+lines(density(d$casos_aprox))
+mean(d$casos_aprox)
+var(d$casos_aprox)
+###########################################################################
+
+## modelo Poisson hombre
+m20_p_h <- glm2::glm2(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  family = "poisson",
+  data = subset(datos.completos, Servicio_salud == "Servicio de Salud Talcahuano" & SEXO == "Hombre"))
+summary(m20_p_h)
+AER::dispersiontest(m20_p_h) # no hay evidencia de sobredispersión
+par(mfrow=c(2,2))
+plot(m20_p_h)
+
+## modelo bin-neg hombre
+m20_bn_h <- MASS::glm.nb(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  data =subset(datos.completos, Servicio_salud == "Servicio de Salud Talcahuano" & SEXO == "Hombre"))
+summary(m20_bn_h)
+
+## comparación de modelos hombre
+
+### test de razon de verosimilitudes
+pchisq(2 * (logLik(m20_bn_h) - logLik(m20_p_h)), df = 1, lower.tail = FALSE)
+## loglik es de 0.07 -> no hay evidencia para rechazar que Poisson sea mejor
+## el parámetro de sobredispersión = 51.0
+
+### por AIC y BIC
+c(BN_AIC=AIC(m20_bn_h), Poisson_AIC=AIC(m20_p_h))
+
+## TALCAHUANO & HOMBRE = POISSON
+```
+
+## 21. Servicio de Salud Ñuble
+
+```{r}
+# Exploración de datos
+d <- subset(datos.completos, Servicio_salud == "Servicio de Salud Ñuble" & SEXO == "Mujer")
+plot(density(d$casos_aprox),main = "", xlab = "Número de casos", ylab = "Frecuencia",lwd=2)
+hist(d$casos_aprox, probability=T,main="Histograma",ylab="Densidad" ,xlab="Número de casos",col="pink")
+lines(density(d$casos_aprox))
+mean(d$casos_aprox)
+var(d$casos_aprox)
+###########################################################################
+
+## modelo Poisson mujer
+m21_p_m <- glm2::glm2(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  family = "poisson",
+  data = subset(datos.completos, Servicio_salud == "Servicio de Salud Ñuble" & SEXO == "Mujer"))
+summary(m21_p_m)
+AER::dispersiontest(m21_p_m) # no hay evidencia de sobredispersión
+par(mfrow=c(2,2))
+plot(m21_p_m)
+
+
+## modelo bin-neg mujer
+m21_bn_m <- MASS::glm.nb(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  data =subset(datos.completos, Servicio_salud == "Servicio de Salud Ñuble" & SEXO == "Mujer"))
+summary(m21_bn_m)
+
+
+## comparación de modelos mujer
+
+### test de razon de verosimilitudes
+pchisq(2 * (logLik(m21_bn_m) - logLik(m21_p_m)), df = 1, lower.tail = FALSE)
+## loglik es de 1 -> no hay evidencia para rechazar que Poisson sea mejor
+## parametro de sobre dispersión = 55178 
+
+### por AIC y BIC
+c(BN_AIC=AIC(m21_bn_m), Poisson_AIC=AIC(m21_p_m))
+
+## ÑUBLE & MUJER = POISSON
+###########################################################################
+```
+
+```{r}
+# Exploración de datos
+d <- subset(datos.completos, Servicio_salud == "Servicio de Salud Ñuble" & SEXO == "Hombre")
+plot(density(d$casos_aprox),main = "", xlab = "Número de casos", ylab = "Frecuencia",lwd=2)
+hist(d$casos_aprox, probability=T,main="Histograma",ylab="Densidad" ,xlab="Número de casos",col="pink")
+lines(density(d$casos_aprox))
+mean(d$casos_aprox)
+var(d$casos_aprox)
+###########################################################################
+
+## modelo Poisson hombre
+m21_p_h <- glm2::glm2(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  family = "poisson",
+  data = subset(datos.completos, Servicio_salud == "Servicio de Salud Ñuble" & SEXO == "Hombre"))
+summary(m21_p_h)
+AER::dispersiontest(m21_p_h) # no hay evidencia de sobredispersión
+par(mfrow=c(2,2))
+plot(m21_p_h)
+
+## modelo bin-neg hombre
+m21_bn_h <- MASS::glm.nb(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  data =subset(datos.completos, Servicio_salud == "Servicio de Salud Ñuble" & SEXO == "Hombre"))
+summary(m21_bn_h)
+
+## comparación de modelos hombre
+
+### test de razon de verosimilitudes
+pchisq(2 * (logLik(m21_bn_h) - logLik(m21_p_h)), df = 1, lower.tail = FALSE)
+## loglik es de 1 -> no hay evidencia para rechazar que Poisson sea mejor
+## el parámetro de sobredispersión = 87442 
+
+### por AIC y BIC
+c(BN_AIC=AIC(m21_bn_h), Poisson_AIC=AIC(m21_p_h))
+
+## LUBLE & HOMBRE = POISSON
+```
+
+## 22. Servicio de Salud Araucanía Norte
+
+```{r}
+# Exploración de datos
+d <- subset(datos.completos, Servicio_salud == "Servicio de Salud Araucanía Norte" & SEXO == "Mujer")
+plot(density(d$casos_aprox),main = "", xlab = "Número de casos", ylab = "Frecuencia",lwd=2)
+hist(d$casos_aprox, probability=T,main="Histograma",ylab="Densidad" ,xlab="Número de casos",col="pink")
+lines(density(d$casos_aprox))
+mean(d$casos_aprox)
+var(d$casos_aprox)
+###########################################################################
+
+## modelo Poisson mujer
+m22_p_m <- glm2::glm2(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  family = "poisson",
+  data = subset(datos.completos, Servicio_salud == "Servicio de Salud Araucanía Norte" & SEXO == "Mujer"))
+summary(m22_p_m)
+AER::dispersiontest(m22_p_m) # no hay evidencia de sobredispersión
+par(mfrow=c(2,2))
+plot(m22_p_m)
+
+## modelo bin-neg mujer
+m22_bn_m <- MASS::glm.nb(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  data =subset(datos.completos, Servicio_salud == "Servicio de Salud Araucanía Norte" & SEXO == "Mujer"))
+summary(m22_bn_m)
+
+
+## comparación de modelos mujer
+
+### test de razon de verosimilitudes
+pchisq(2 * (logLik(m22_bn_m) - logLik(m22_p_m)), df = 1, lower.tail = FALSE)
+## loglik es de 1 -> no hay evidencia para rechazar que Poisson sea mejor
+## parametro de sobre dispersión = 65450
+
+### por AIC y BIC
+c(BN_AIC=AIC(m22_bn_m), Poisson_AIC=AIC(m22_p_m))
+
+## ARAUC NORTE & MUJER = POISSON
+###########################################################################
+```
+
+```{r}
+# Exploración de datos
+d <- subset(datos.completos, Servicio_salud == "Servicio de Salud Araucanía Norte" & SEXO == "Hombre")
+plot(density(d$casos_aprox),main = "", xlab = "Número de casos", ylab = "Frecuencia",lwd=2)
+hist(d$casos_aprox, probability=T,main="Histograma",ylab="Densidad" ,xlab="Número de casos",col="pink")
+lines(density(d$casos_aprox))
+mean(d$casos_aprox)
+var(d$casos_aprox)
+###########################################################################
+
+## modelo Poisson hombre
+m22_p_h <- glm2::glm2(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  family = "poisson",
+  data = subset(datos.completos, Servicio_salud == "Servicio de Salud Araucanía Norte" & SEXO == "Hombre"))
+summary(m22_p_h)
+AER::dispersiontest(m22_p_h) # no hay evidencia de sobredispersión
+par(mfrow=c(2,2))
+plot(m22_p_h)
+
+## modelo bin-neg hombre
+m22_bn_h <- MASS::glm.nb(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  data =subset(datos.completos, Servicio_salud == "Servicio de Salud Araucanía Norte" & SEXO == "Hombre"))
+summary(m22_bn_h)
+
+## comparación de modelos hombre
+
+### test de razon de verosimilitudes
+pchisq(2 * (logLik(m22_bn_h) - logLik(m22_p_h)), df = 1, lower.tail = FALSE)
+## loglik es de 1 -> no hay evidencia para rechazar que Poisson sea mejor
+## el parámetro de sobredispersión = 103670 
+
+### por AIC y BIC
+c(BN_AIC=AIC(m22_bn_h), Poisson_AIC=AIC(m22_p_h))
+
+## ARAUC NORTE & HOMBRE = POISSON
+```
+
+## 23. Servicio de Salud Araucanía Sur
+
+```{r}
+# Exploración de datos
+d <- subset(datos.completos, Servicio_salud == "Servicio de Salud Araucanía Sur" & SEXO == "Mujer")
+plot(density(d$casos_aprox),main = "", xlab = "Número de casos", ylab = "Frecuencia",lwd=2)
+hist(d$casos_aprox, probability=T,main="Histograma",ylab="Densidad" ,xlab="Número de casos",col="pink")
+lines(density(d$casos_aprox))
+mean(d$casos_aprox)
+var(d$casos_aprox)
+###########################################################################
+
+## modelo Poisson mujer
+m23_p_m <- glm2::glm2(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  family = "poisson",
+  ## subgrupo de la zona correspondiente
+  data = subset(datos.completos, Servicio_salud == "Servicio de Salud Araucanía Sur" & SEXO == "Mujer"))
+summary(m23_p_m)
+AER::dispersiontest(m23_p_m) # no hay evidencia de sobredispersión
+par(mfrow=c(2,2))
+plot(m23_p_m)
+
+## modelo bin-neg mujer
+m23_bn_m <- MASS::glm.nb(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  data =subset(datos.completos, Servicio_salud == "Servicio de Salud Araucanía Sur" & SEXO == "Mujer"))
+summary(m23_bn_m)
+
+
+## comparación de modelos mujer
+
+### test de razon de verosimilitudes
+pchisq(2 * (logLik(m23_bn_m) - logLik(m23_p_m)), df = 1, lower.tail = FALSE)
+## loglik es de -2230.58 -> no hay evidencia de que el bin neg sea mejor que el poisson
+## nota: recordar que en bn la parametrización es V[Y] = µ + µ^2/theta (theta es el parametro de sobredispersión); por eso cuando theta es muy grande mu/theta ≈ 0, entonces V[Y] = µ
+## parametro de sobre dispersión = 39972.02
+
+### por AIC y BIC
+c(BN_AIC=AIC(m23_bn_m), Poisson_AIC=AIC(m23_p_m))
+
+## no hay evidencia de sobre dispersion relevante; es mejor el POISSON.
+## el warning del modelo bn es por el gran valor del parámetro de sobredispersión, el algoritmo no encuentra un valor optimo de theta ya o existe sobredispersión real en los datos.
+
+###########################################################################
+```
+
+```{r}
+# Exploración de datos
+d <- subset(datos.completos, Servicio_salud == "Servicio de Salud Araucanía Sur" & SEXO == "Hombre")
+plot(density(d$casos_aprox),main = "", xlab = "Número de casos", ylab = "Frecuencia",lwd=2)
+hist(d$casos_aprox, probability=T,main="Histograma",ylab="Densidad" ,xlab="Número de casos",col="pink")
+lines(density(d$casos_aprox))
+mean(d$casos_aprox)
+var(d$casos_aprox)
+###########################################################################
+
+## modelo Poisson hombre
+m23_p_h <- glm2::glm2(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  family = "poisson",
+  ## subgrupo de la zona correspondiente
+  data = subset(datos.completos, Servicio_salud == "Servicio de Salud Araucanía Sur" & SEXO == "Hombre"))
+summary(m23_p_h)
+AER::dispersiontest(m23_p_h) # no hay evidencia de sobredispersión
+par(mfrow=c(2,2))
+plot(m23_p_h)
+
+## modelo bin-neg hombre
+m23_bn_h <- MASS::glm.nb(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  data =subset(datos.completos, Servicio_salud == "Servicio de Salud Araucanía Sur" & SEXO == "Hombre"))
+summary(m23_bn_h)
+
+## comparación de modelos hombre
+
+### test de razon de verosimilitudes
+pchisq(2 * (logLik(m23_bn_h) - logLik(m23_p_h)), df = 1, lower.tail = FALSE)
+## loglik es de   0.4992757 -> no hay evidencia de que el bin neg sea mejor que el poisson
+## nota: recordar que en bn la parametrización es V[Y] = µ + µ^2/theta (theta es el parametro de sobredispersión); por eso cuando theta es muy grande mu/theta ≈ 0, entonces V[Y] = µ
+## el parámetro de sobredispersión es 204.91
+
+### por AIC y BIC
+c(BN_AIC=AIC(m23_bn_h), Poisson_AIC=AIC(m23_p_h))
+```
+
+## 24. Servicio de Salud Del Reloncaví
+
+```{r}
+# Exploración de datos
+d <- subset(datos.completos, Servicio_salud == "Servicio de Salud Del Reloncaví" & SEXO == "Mujer")
+plot(density(d$casos_aprox),main = "", xlab = "Número de casos", ylab = "Frecuencia",lwd=2)
+hist(d$casos_aprox, probability=T,main="Histograma",ylab="Densidad" ,xlab="Número de casos",col="pink")
+lines(density(d$casos_aprox))
+mean(d$casos_aprox)
+var(d$casos_aprox)
+###########################################################################
+
+## modelo Poisson mujer
+m24_p_m <- glm2::glm2(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  family = "poisson",
+  ## subgrupo de la zona correspondiente
+  data = subset(datos.completos, Servicio_salud == "Servicio de Salud Del Reloncaví" & SEXO == "Mujer"))
+summary(m24_p_m)
+AER::dispersiontest(m24_p_m) # no hay evidencia de sobredispersión
+par(mfrow=c(2,2))
+plot(m24_p_m)
+
+## modelo bin-neg mujer
+m24_bn_m <- MASS::glm.nb(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  data =subset(datos.completos, Servicio_salud == "Servicio de Salud Del Reloncaví" & SEXO == "Mujer"))
+summary(m24_bn_m)
+
+
+## comparación de modelos mujer
+
+### test de razon de verosimilitudes
+pchisq(2 * (logLik(m24_bn_m) - logLik(m24_p_m)), df = 1, lower.tail = FALSE)
+## loglik es de -2230.58 -> no hay evidencia de que el bin neg sea mejor que el poisson
+## nota: recordar que en bn la parametrización es V[Y] = µ + µ^2/theta (theta es el parametro de sobredispersión); por eso cuando theta es muy grande mu/theta ≈ 0, entonces V[Y] = µ
+## parametro de sobre dispersión = 39972.02
+
+### por AIC y BIC
+c(BN_AIC=AIC(m24_bn_m), Poisson_AIC=AIC(m24_p_m))
+
+## no hay evidencia de sobre dispersion relevante; es mejor el POISSON.
+## el warning del modelo bn es por el gran valor del parámetro de sobredispersión, el algoritmo no encuentra un valor optimo de theta ya o existe sobredispersión real en los datos.
+
+###########################################################################
+```
+
+```{r}
+# Exploración de datos
+d <- subset(datos.completos, Servicio_salud == "Servicio de Salud Del Reloncaví" & SEXO == "Hombre")
+plot(density(d$casos_aprox),main = "", xlab = "Número de casos", ylab = "Frecuencia",lwd=2)
+hist(d$casos_aprox, probability=T,main="Histograma",ylab="Densidad" ,xlab="Número de casos",col="pink")
+lines(density(d$casos_aprox))
+mean(d$casos_aprox)
+var(d$casos_aprox)
+###########################################################################
+
+## modelo Poisson hombre
+m24_p_h <- glm2::glm2(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  family = "poisson",
+  ## subgrupo de la zona correspondiente
+  data = subset(datos.completos, Servicio_salud == "Servicio de Salud Del Reloncaví" & SEXO == "Hombre"))
+summary(m24_p_h)
+AER::dispersiontest(m24_p_h) # no hay evidencia de sobredispersión
+par(mfrow=c(2,2))
+plot(m24_p_h)
+
+## modelo bin-neg hombre
+m24_bn_h <- MASS::glm.nb(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  data =subset(datos.completos, Servicio_salud == "Servicio de Salud Del Reloncaví" & SEXO == "Hombre"))
+summary(m24_bn_h)
+
+## comparación de modelos hombre
+
+### test de razon de verosimilitudes
+pchisq(2 * (logLik(m24_bn_h) - logLik(m24_p_h)), df = 1, lower.tail = FALSE)
+## loglik es de   0.4992757 -> no hay evidencia de que el bin neg sea mejor que el poisson
+## nota: recordar que en bn la parametrización es V[Y] = µ + µ^2/theta (theta es el parametro de sobredispersión); por eso cuando theta es muy grande mu/theta ≈ 0, entonces V[Y] = µ
+## el parámetro de sobredispersión es 204.91
+
+### por AIC y BIC
+c(BN_AIC=AIC(m24_bn_h), Poisson_AIC=AIC(m24_p_h))
+```
+
+## 25. Servicio de Salud Los Rios
+
+```{r}
+# Exploración de datos
+d <- subset(datos.completos, Servicio_salud == "Servicio de Salud Los Rios" & SEXO == "Mujer")
+plot(density(d$casos_aprox),main = "", xlab = "Número de casos", ylab = "Frecuencia",lwd=2)
+hist(d$casos_aprox, probability=T,main="Histograma",ylab="Densidad" ,xlab="Número de casos",col="pink")
+lines(density(d$casos_aprox))
+mean(d$casos_aprox)
+var(d$casos_aprox)
+###########################################################################
+
+## modelo Poisson mujer
+m25_p_m <- glm2::glm2(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  family = "poisson",
+  ## subgrupo de la zona correspondiente
+  data = subset(datos.completos, Servicio_salud == "Servicio de Salud Los Rios" & SEXO == "Mujer"))
+summary(m25_p_m)
+AER::dispersiontest(m25_p_m) # no hay evidencia de sobredispersión
+par(mfrow=c(2,2))
+plot(m25_p_m)
+
+## modelo bin-neg mujer
+m25_bn_m <- MASS::glm.nb(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  data =subset(datos.completos, Servicio_salud == "Servicio de Salud Los Rios" & SEXO == "Mujer"))
+summary(m25_bn_m)
+
+
+## comparación de modelos mujer
+
+### test de razon de verosimilitudes
+pchisq(2 * (logLik(m25_bn_m) - logLik(m25_p_m)), df = 1, lower.tail = FALSE)
+## loglik es de -2230.58 -> no hay evidencia de que el bin neg sea mejor que el poisson
+## nota: recordar que en bn la parametrización es V[Y] = µ + µ^2/theta (theta es el parametro de sobredispersión); por eso cuando theta es muy grande mu/theta ≈ 0, entonces V[Y] = µ
+## parametro de sobre dispersión = 39972.02
+
+### por AIC y BIC
+c(BN_AIC=AIC(m25_bn_m), Poisson_AIC=AIC(m25_p_m))
+
+## no hay evidencia de sobre dispersion relevante; es mejor el POISSON.
+## el warning del modelo bn es por el gran valor del parámetro de sobredispersión, el algoritmo no encuentra un valor optimo de theta ya o existe sobredispersión real en los datos.
+
+###########################################################################
+```
+
+```{r}
+# Exploración de datos
+d <- subset(datos.completos, Servicio_salud == "Servicio de Salud Los Rios" & SEXO == "Hombre")
+plot(density(d$casos_aprox),main = "", xlab = "Número de casos", ylab = "Frecuencia",lwd=2)
+hist(d$casos_aprox, probability=T,main="Histograma",ylab="Densidad" ,xlab="Número de casos",col="pink")
+lines(density(d$casos_aprox))
+mean(d$casos_aprox)
+var(d$casos_aprox)
+###########################################################################
+
+## modelo Poisson hombre
+m25_p_h <- glm2::glm2(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  family = "poisson",
+  ## subgrupo de la zona correspondiente
+  data = subset(datos.completos, Servicio_salud == "Servicio de Salud Los Rios" & SEXO == "Hombre"))
+summary(m25_p_h)
+AER::dispersiontest(m25_p_h) # no hay evidencia de sobredispersión
+par(mfrow=c(2,2))
+plot(m25_p_h)
+
+## modelo bin-neg hombre
+m25_bn_h <- MASS::glm.nb(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  data =subset(datos.completos, Servicio_salud == "Servicio de Salud Los Rios" & SEXO == "Hombre"))
+summary(m25_bn_h)
+
+## comparación de modelos hombre
+
+### test de razon de verosimilitudes
+pchisq(2 * (logLik(m25_bn_h) - logLik(m25_p_h)), df = 1, lower.tail = FALSE)
+## loglik es de   0.4992757 -> no hay evidencia de que el bin neg sea mejor que el poisson
+## nota: recordar que en bn la parametrización es V[Y] = µ + µ^2/theta (theta es el parametro de sobredispersión); por eso cuando theta es muy grande mu/theta ≈ 0, entonces V[Y] = µ
+## el parámetro de sobredispersión es 204.91
+
+### por AIC y BIC
+c(BN_AIC=AIC(m25_bn_h), Poisson_AIC=AIC(m25_p_h))
+```
+
+## 26. Servicio de Salud Magallanes
+
+```{r}
+# Exploración de datos
+d <- subset(datos.completos, Servicio_salud == "Servicio de Salud Magallanes" & SEXO == "Mujer")
+plot(density(d$casos_aprox),main = "", xlab = "Número de casos", ylab = "Frecuencia",lwd=2)
+hist(d$casos_aprox, probability=T,main="Histograma",ylab="Densidad" ,xlab="Número de casos",col="pink")
+lines(density(d$casos_aprox))
+mean(d$casos_aprox)
+var(d$casos_aprox)
+###########################################################################
+
+## modelo Poisson mujer
+m26_p_m <- glm2::glm2(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  family = "poisson",
+  ## subgrupo de la zona correspondiente
+  data = subset(datos.completos, Servicio_salud == "Servicio de Salud Magallanes" & SEXO == "Mujer"))
+summary(m26_p_m)
+AER::dispersiontest(m26_p_m) # no hay evidencia de sobredispersión
+par(mfrow=c(2,2))
+plot(m26_p_m)
+
+## modelo bin-neg mujer
+m26_bn_m <- MASS::glm.nb(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  data =subset(datos.completos, Servicio_salud == "Servicio de Salud Magallanes" & SEXO == "Mujer"))
+summary(m26_bn_m)
+
+
+## comparación de modelos mujer
+
+### test de razon de verosimilitudes
+pchisq(2 * (logLik(m26_bn_m) - logLik(m26_p_m)), df = 1, lower.tail = FALSE)
+## loglik es de -2230.58 -> no hay evidencia de que el bin neg sea mejor que el poisson
+## nota: recordar que en bn la parametrización es V[Y] = µ + µ^2/theta (theta es el parametro de sobredispersión); por eso cuando theta es muy grande mu/theta ≈ 0, entonces V[Y] = µ
+## parametro de sobre dispersión = 39972.02
+
+### por AIC y BIC
+c(BN_AIC=AIC(m26_bn_m), Poisson_AIC=AIC(m26_p_m))
+
+## no hay evidencia de sobre dispersion relevante; es mejor el POISSON.
+## el warning del modelo bn es por el gran valor del parámetro de sobredispersión, el algoritmo no encuentra un valor optimo de theta ya o existe sobredispersión real en los datos.
+
+###########################################################################
+```
+
+```{r}
+# Exploración de datos
+d <- subset(datos.completos, Servicio_salud == "Servicio de Salud Magallanes" & SEXO == "Hombre")
+plot(density(d$casos_aprox),main = "", xlab = "Número de casos", ylab = "Frecuencia",lwd=2)
+hist(d$casos_aprox, probability=T,main="Histograma",ylab="Densidad" ,xlab="Número de casos",col="pink")
+lines(density(d$casos_aprox))
+mean(d$casos_aprox)
+var(d$casos_aprox)
+###########################################################################
+
+## modelo Poisson hombre
+m26_p_h <- glm2::glm2(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  family = "poisson",
+  ## subgrupo de la zona correspondiente
+  data = subset(datos.completos, Servicio_salud == "Servicio de Salud Magallanes" & SEXO == "Hombre"))
+summary(m26_p_h)
+AER::dispersiontest(m26_p_h) # no hay evidencia de sobredispersión
+par(mfrow=c(2,2))
+plot(m26_p_h)
+
+## modelo bin-neg hombre
+m26_bn_h <- MASS::glm.nb(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  data =subset(datos.completos, Servicio_salud == "Servicio de Salud Magallanes" & SEXO == "Hombre"))
+summary(m26_bn_h)
+
+## comparación de modelos hombre
+
+### test de razon de verosimilitudes
+pchisq(2 * (logLik(m26_bn_h) - logLik(m26_p_h)), df = 1, lower.tail = FALSE)
+## loglik es de   0.4992757 -> no hay evidencia de que el bin neg sea mejor que el poisson
+## nota: recordar que en bn la parametrización es V[Y] = µ + µ^2/theta (theta es el parametro de sobredispersión); por eso cuando theta es muy grande mu/theta ≈ 0, entonces V[Y] = µ
+## el parámetro de sobredispersión es 204.91
+
+### por AIC y BIC
+c(BN_AIC=AIC(m26_bn_h), Poisson_AIC=AIC(m26_p_h))
+```
+
+## 27. Servicio de Salud Osorno
+
+```{r}
+# Exploración de datos
+d <- subset(datos.completos, Servicio_salud == "Servicio de Salud Osorno" & SEXO == "Hombre")
+plot(density(d$casos_aprox),main = "", xlab = "Número de casos", ylab = "Frecuencia",lwd=2)
+hist(d$casos_aprox, probability=T,main="Histograma",ylab="Densidad" ,xlab="Número de casos",col="pink")
+lines(density(d$casos_aprox))
+mean(d$casos_aprox)
+var(d$casos_aprox)
+###########################################################################
+
+## modelo Poisson mujer
+m27_p_m <- glm2::glm2(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  family = "poisson",
+  ## subgrupo de la zona correspondiente
+  data = subset(datos.completos, Servicio_salud == "Servicio de Salud Osorno" & SEXO == "Mujer"))
+summary(m27_p_m)
+AER::dispersiontest(m27_p_m) # no hay evidencia de sobredispersión
+par(mfrow=c(2,2))
+plot(m27_p_m)
+
+## modelo bin-neg mujer
+m27_bn_m <- MASS::glm.nb(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  data =subset(datos.completos, Servicio_salud == "Servicio de Salud Osorno" & SEXO == "Mujer"))
+summary(m27_bn_m)
+
+
+## comparación de modelos mujer
+
+### test de razon de verosimilitudes
+pchisq(2 * (logLik(m27_bn_m) - logLik(m27_p_m)), df = 1, lower.tail = FALSE)
+## loglik es de -2230.58 -> no hay evidencia de que el bin neg sea mejor que el poisson
+## nota: recordar que en bn la parametrización es V[Y] = µ + µ^2/theta (theta es el parametro de sobredispersión); por eso cuando theta es muy grande mu/theta ≈ 0, entonces V[Y] = µ
+## parametro de sobre dispersión = 39972.02
+
+### por AIC y BIC
+c(BN_AIC=AIC(m27_bn_m), Poisson_AIC=AIC(m27_p_m))
+
+## no hay evidencia de sobre dispersion relevante; es mejor el POISSON.
+## el warning del modelo bn es por el gran valor del parámetro de sobredispersión, el algoritmo no encuentra un valor optimo de theta ya o existe sobredispersión real en los datos.
+
+###########################################################################
+```
+
+```{r}
+# Exploración de datos
+d <- subset(datos.completos, Servicio_salud == "Servicio de Salud Osorno" & SEXO == "Hombre")
+plot(density(d$casos_aprox),main = "", xlab = "Número de casos", ylab = "Frecuencia",lwd=2)
+hist(d$casos_aprox, probability=T,main="Histograma",ylab="Densidad" ,xlab="Número de casos",col="pink")
+lines(density(d$casos_aprox))
+mean(d$casos_aprox)
+var(d$casos_aprox)
+###########################################################################
+
+## modelo Poisson hombre
+m27_p_h <- glm2::glm2(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  family = "poisson",
+  ## subgrupo de la zona correspondiente
+  data = subset(datos.completos, Servicio_salud == "Servicio de Salud Osorno" & SEXO == "Hombre"))
+summary(m27_p_h)
+AER::dispersiontest(m27_p_h) # no hay evidencia de sobredispersión
+par(mfrow=c(2,2))
+plot(m27_p_h)
+
+## modelo bin-neg hombre
+m27_bn_h <- MASS::glm.nb(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  data =subset(datos.completos, Servicio_salud == "Servicio de Salud Osorno" & SEXO == "Hombre"))
+summary(m27_bn_h)
+
+## comparación de modelos hombre
+
+### test de razon de verosimilitudes
+pchisq(2 * (logLik(m27_bn_h) - logLik(m27_p_h)), df = 1, lower.tail = FALSE)
+## loglik es de   0.4992757 -> no hay evidencia de que el bin neg sea mejor que el poisson
+## nota: recordar que en bn la parametrización es V[Y] = µ + µ^2/theta (theta es el parametro de sobredispersión); por eso cuando theta es muy grande mu/theta ≈ 0, entonces V[Y] = µ
+## el parámetro de sobredispersión es 204.91
+
+### por AIC y BIC
+c(BN_AIC=AIC(m27_bn_h), Poisson_AIC=AIC(m27_p_h))
+```
+
+## 28. Servicio de Salud Aysén
+
+```{r}
+# Exploración de datos
+d <- subset(datos.completos, Servicio_salud == "Servicio de Salud Aysén" & SEXO == "Mujer")
+plot(density(d$casos_aprox),main = "", xlab = "Número de casos", ylab = "Frecuencia",lwd=2)
+hist(d$casos_aprox, probability=T,main="Histograma",ylab="Densidad" ,xlab="Número de casos",col="pink")
+lines(density(d$casos_aprox))
+mean(d$casos_aprox)
+var(d$casos_aprox)
+###########################################################################
+
+## modelo Poisson mujer
+m28_p_m <- glm2::glm2(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  family = "poisson",
+  ## subgrupo de la zona correspondiente
+  data = subset(datos.completos, Servicio_salud == "Servicio de Salud Aysén" & SEXO == "Mujer"))
+summary(m28_p_m)
+AER::dispersiontest(m28_p_m) # no hay evidencia de sobredispersión
+par(mfrow=c(2,2))
+plot(m28_p_m)
+
+## modelo bin-neg mujer
+m28_bn_m <- MASS::glm.nb(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  data =subset(datos.completos, Servicio_salud == "Servicio de Salud Aysén" & SEXO == "Mujer"))
+summary(m28_bn_m)
+
+
+## comparación de modelos mujer
+
+### test de razon de verosimilitudes
+pchisq(2 * (logLik(m28_bn_m) - logLik(m28_p_m)), df = 1, lower.tail = FALSE)
+## loglik es de -2230.58 -> no hay evidencia de que el bin neg sea mejor que el poisson
+## nota: recordar que en bn la parametrización es V[Y] = µ + µ^2/theta (theta es el parametro de sobredispersión); por eso cuando theta es muy grande mu/theta ≈ 0, entonces V[Y] = µ
+## parametro de sobre dispersión = 39972.02
+
+### por AIC y BIC
+c(BN_AIC=AIC(m28_bn_m), Poisson_AIC=AIC(m28_p_m))
+
+## no hay evidencia de sobre dispersion relevante; es mejor el POISSON.
+## el warning del modelo bn es por el gran valor del parámetro de sobredispersión, el algoritmo no encuentra un valor optimo de theta ya o existe sobredispersión real en los datos.
+
+###########################################################################
+```
+
+```{r}
+# Exploración de datos
+d <- subset(datos.completos, Servicio_salud == "Servicio de Salud Aysén" & SEXO == "Hombre")
+plot(density(d$casos_aprox),main = "", xlab = "Número de casos", ylab = "Frecuencia",lwd=2)
+hist(d$casos_aprox, probability=T,main="Histograma",ylab="Densidad" ,xlab="Número de casos",col="pink")
+lines(density(d$casos_aprox))
+mean(d$casos_aprox)
+var(d$casos_aprox)
+###########################################################################
+
+## modelo Poisson hombre
+m28_p_h <- glm2::glm2(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  family = "poisson",
+  ## subgrupo de la zona correspondiente
+  data = subset(datos.completos, Servicio_salud == "Servicio de Salud Aysén" & SEXO == "Hombre"))
+summary(m28_p_h)
+AER::dispersiontest(m28_p_h) # no hay evidencia de sobredispersión
+par(mfrow=c(2,2))
+plot(m28_p_h)
+
+## modelo bin-neg hombre
+m28_bn_h <- MASS::glm.nb(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  data =subset(datos.completos, Servicio_salud == "Servicio de Salud Aysén" & SEXO == "Hombre"))
+summary(m28_bn_h)
+
+## comparación de modelos hombre
+
+### test de razon de verosimilitudes
+pchisq(2 * (logLik(m28_bn_h) - logLik(m28_p_h)), df = 1, lower.tail = FALSE)
+## loglik es de   0.4992757 -> no hay evidencia de que el bin neg sea mejor que el poisson
+## nota: recordar que en bn la parametrización es V[Y] = µ + µ^2/theta (theta es el parametro de sobredispersión); por eso cuando theta es muy grande mu/theta ≈ 0, entonces V[Y] = µ
+## el parámetro de sobredispersión es 204.91
+
+### por AIC y BIC
+c(BN_AIC=AIC(m28_bn_h), Poisson_AIC=AIC(m28_p_h))
+```
+
+## 29. Servicio de Salud Chiloé
+
+```{r}
+# Exploración de datos
+d <- subset(datos.completos, Servicio_salud == "Servicio de Salud Chiloé" & SEXO == "Mujer")
+plot(density(d$casos_aprox),main = "", xlab = "Número de casos", ylab = "Frecuencia",lwd=2)
+hist(d$casos_aprox, probability=T,main="Histograma",ylab="Densidad" ,xlab="Número de casos",col="pink")
+lines(density(d$casos_aprox))
+mean(d$casos_aprox)
+var(d$casos_aprox)
+###########################################################################
+
+## modelo Poisson mujer
+m29_p_m <- glm2::glm2(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  family = "poisson",
+  ## subgrupo de la zona correspondiente
+  data = subset(datos.completos, Servicio_salud == "Servicio de Salud Chiloé" & SEXO == "Mujer"))
+summary(m29_p_m)
+AER::dispersiontest(m29_p_m) # no hay evidencia de sobredispersión
+par(mfrow=c(2,2))
+plot(m29_p_m)
+
+## modelo bin-neg mujer
+m29_bn_m <- MASS::glm.nb(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  data =subset(datos.completos, Servicio_salud == "Servicio de Salud Chiloé" & SEXO == "Mujer"))
+summary(m29_bn_m)
+
+
+## comparación de modelos mujer
+
+### test de razon de verosimilitudes
+pchisq(2 * (logLik(m29_bn_m) - logLik(m29_p_m)), df = 1, lower.tail = FALSE)
+## loglik es de -2230.58 -> no hay evidencia de que el bin neg sea mejor que el poisson
+## nota: recordar que en bn la parametrización es V[Y] = µ + µ^2/theta (theta es el parametro de sobredispersión); por eso cuando theta es muy grande mu/theta ≈ 0, entonces V[Y] = µ
+## parametro de sobre dispersión = 39972.02
+
+### por AIC y BIC
+c(BN_AIC=AIC(m29_bn_m), Poisson_AIC=AIC(m29_p_m))
+
+## no hay evidencia de sobre dispersion relevante; es mejor el POISSON.
+## el warning del modelo bn es por el gran valor del parámetro de sobredispersión, el algoritmo no encuentra un valor optimo de theta ya o existe sobredispersión real en los datos.
+
+###########################################################################
+```
+
+```{r}
+# Exploración de datos
+d <- subset(datos.completos, Servicio_salud == "Servicio de Salud Chiloé" & SEXO == "Hombre")
+plot(density(d$casos_aprox),main = "", xlab = "Número de casos", ylab = "Frecuencia",lwd=2)
+hist(d$casos_aprox, probability=T,main="Histograma",ylab="Densidad" ,xlab="Número de casos",col="pink")
+lines(density(d$casos_aprox))
+mean(d$casos_aprox)
+var(d$casos_aprox)
+###########################################################################
+
+## modelo Poisson hombre
+m29_p_h <- glm2::glm2(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  family = "poisson",
+  ## subgrupo de la zona correspondiente
+  data = subset(datos.completos, Servicio_salud == "Servicio de Salud Chiloé" & SEXO == "Hombre"))
+summary(m29_p_h)
+AER::dispersiontest(m29_p_h) # no hay evidencia de sobredispersión
+par(mfrow=c(2,2))
+plot(m29_p_h)
+
+## modelo bin-neg hombre
+m29_bn_h <- MASS::glm.nb(
+  formula = casos_aprox ~ offset(log(poblacion)) + QUINQUENIO + AÑO,
+  data =subset(datos.completos, Servicio_salud == "Servicio de Salud Chiloé" & SEXO == "Hombre"))
+summary(m29_bn_h)
+
+## comparación de modelos hombre
+
+### test de razon de verosimilitudes
+pchisq(2 * (logLik(m29_bn_h) - logLik(m29_p_h)), df = 1, lower.tail = FALSE)
+## loglik es de   0.4992757 -> no hay evidencia de que el bin neg sea mejor que el poisson
+## nota: recordar que en bn la parametrización es V[Y] = µ + µ^2/theta (theta es el parametro de sobredispersión); por eso cuando theta es muy grande mu/theta ≈ 0, entonces V[Y] = µ
+## el parámetro de sobredispersión es 204.91
+
+### por AIC y BIC
+c(BN_AIC=AIC(m29_bn_h), Poisson_AIC=AIC(m29_p_h))
+```
+
+# PAC SS
+
+## betas coef AÑO
+
+```{r}
+## betas.
+( betas <- c( (exp(coef(m1_p_m)["AÑO"])),     ## norte mujeres
+             (exp(coef(m1_p_h)["AÑO"])),     ## norte hombres
+             (exp(coef(m2_p_m)["AÑO"])),     ## centro mujeres
+             (exp(coef(m2_p_h)["AÑO"])),     ## centro hombres
+             (exp(coef(m3_p_m)["AÑO"])),     ## sur mujeres
+             (exp(coef(m3_p_h)["AÑO"])),     ## sur hombres
+             (exp(coef(m4_p_m)["AÑO"])), 
+             (exp(coef(m4_p_h)["AÑO"])), 
+             (exp(coef(m5_p_m)["AÑO"])), 
+             (exp(coef(m5_p_h)["AÑO"])), 
+             (exp(coef(m6_p_m)["AÑO"])), 
+             (exp(coef(m6_p_h)["AÑO"])), 
+             (exp(coef(m7_p_m)["AÑO"])), 
+             (exp(coef(m7_p_h)["AÑO"])), 
+             (exp(coef(m8_p_m)["AÑO"])), 
+             (exp(coef(m8_p_h)["AÑO"])), 
+             (exp(coef(m9_p_m)["AÑO"])), 
+             (exp(coef(m9_p_h)["AÑO"])), 
+             (exp(coef(m10_p_m)["AÑO"])),
+             (exp(coef(m10_p_h)["AÑO"])), 
+             (exp(coef(m11_p_m)["AÑO"])), 
+             (exp(coef(m11_p_h)["AÑO"])), 
+             (exp(coef(m12_p_m)["AÑO"])), 
+             (exp(coef(m12_p_h)["AÑO"])), 
+             (exp(coef(m13_p_m)["AÑO"])), 
+             (exp(coef(m13_p_h)["AÑO"])), 
+             (exp(coef(m14_p_m)["AÑO"])), 
+             (exp(coef(m14_p_h)["AÑO"])), 
+             (exp(coef(m15_p_m)["AÑO"])), 
+             (exp(coef(m15_p_h)["AÑO"])), 
+             (exp(coef(m16_p_m)["AÑO"])), 
+             (exp(coef(m16_p_h)["AÑO"])), 
+             (exp(coef(m17_p_m)["AÑO"])), 
+             (exp(coef(m17_p_h)["AÑO"])), 
+             (exp(coef(m18_p_m)["AÑO"])), 
+             (exp(coef(m18_p_h)["AÑO"])), 
+             (exp(coef(m19_p_m)["AÑO"])), 
+             (exp(coef(m19_p_h)["AÑO"])), 
+             (exp(coef(m20_p_m)["AÑO"])), 
+             (exp(coef(m20_p_h)["AÑO"])), 
+             (exp(coef(m21_p_m)["AÑO"])), 
+             (exp(coef(m21_p_h)["AÑO"])), 
+             (exp(coef(m22_p_m)["AÑO"])), 
+             (exp(coef(m22_p_h)["AÑO"])), 
+             (exp(coef(m23_p_m)["AÑO"])), 
+             (exp(coef(m23_p_h)["AÑO"])), 
+             (exp(coef(m24_p_m)["AÑO"])), 
+             (exp(coef(m24_p_h)["AÑO"])), 
+             (exp(coef(m25_p_m)["AÑO"])), 
+             (exp(coef(m25_p_h)["AÑO"])), 
+             (exp(coef(m26_p_m)["AÑO"])), 
+             (exp(coef(m26_p_h)["AÑO"])), 
+             (exp(coef(m27_p_m)["AÑO"])), 
+             (exp(coef(m27_p_h)["AÑO"])), 
+             (exp(coef(m28_p_m)["AÑO"])), 
+             (exp(coef(m28_p_h)["AÑO"])), 
+             (exp(coef(m29_p_m)["AÑO"])), 
+             (exp(coef(m29_p_h)["AÑO"])) 
+             ) )
+```
+
+## Predicciones
+
+```{r}
+## PACs
+## función para el cálculo de PAC
+PAC <- function(a,                   ## vector con PACs de AÑO para cada zona y sexo
+                b,                   ## df con datos a partir de los cuales predecir
+                c){                  ## df con todas las poryecciones pob por sexo, quinquenio y zona
+  
+##  1. cálculo del porcentaje anual de cambio por zona y sexo
+  
+  PAC_z <- (a - 1) * 100             ## transformación empleada por el MINSAL
+
+########################################################################
+  
+## 2. Cálculo de incidencia acumulada
+  ##  tomar las incidencias de 2012-2016, junto a las pobs y calcular la tasa de incidencia acumulada por quinquenio y sexo, por cada zona.
+  
+   incidencia_acum <- b %>%
+    dplyr::filter(AÑO %in% 2013:2017) %>%                   ## dejar años para luego validar 2013-2017 (antes 2015-2019)
+    dplyr::group_by(Servicio_salud, SEXO, QUINQUENIO) %>%   ## agrupar por las variables
+    dplyr::summarise(
+      casos_tot = sum(casos_aprox, na.rm = TRUE),     ## casos por cada grupo en el periodo
+      pob_tot   = sum(poblacion, na.rm = TRUE),       ## población por cada grupo en el periodo
+      tasa_acum_esp      = ((casos_tot / pob_tot))    ## tasa por hab
+    ) %>%
+    dplyr::ungroup() %>%
+     
+     ## añadir el valor de PAC por zona y sexo
+     mutate(PAC = case_when(
+       SEXO == "Mujer"  & Servicio_salud == "Servicio de Salud Arica y Parinacota"         ~ PAC_z[1],
+       SEXO == "Hombre" & Servicio_salud == "Servicio de Salud Arica y Parinacota"         ~ PAC_z[2],
+       SEXO == "Mujer"  & Servicio_salud == "Servicio de Salud Tarapacá"                   ~ PAC_z[3],
+       SEXO == "Hombre" & Servicio_salud == "Servicio de Salud Tarapacá"                   ~ PAC_z[4],
+       SEXO == "Mujer"  & Servicio_salud == "Servicio de Salud Antofagasta"                ~ PAC_z[5],
+       SEXO == "Hombre" & Servicio_salud == "Servicio de Salud Antofagasta"                ~ PAC_z[6],
+       SEXO == "Mujer"  & Servicio_salud == "Servicio de Salud Atacama"                    ~ PAC_z[7],
+       SEXO == "Hombre" & Servicio_salud == "Servicio de Salud Atacama"                    ~ PAC_z[8],
+       SEXO == "Mujer"  & Servicio_salud == "Servicio de Salud Coquimbo"                   ~ PAC_z[9],
+       SEXO == "Hombre" & Servicio_salud == "Servicio de Salud Coquimbo"                   ~ PAC_z[10],
+       SEXO == "Mujer"  & Servicio_salud == "Servicio de Salud Aconcagua"                  ~ PAC_z[11],
+       SEXO == "Hombre" & Servicio_salud == "Servicio de Salud Aconcagua"                  ~ PAC_z[12],
+       SEXO == "Mujer"  & Servicio_salud == "Servicio de Salud Viña del Mar Quillota"      ~ PAC_z[13],
+       SEXO == "Hombre" & Servicio_salud == "Servicio de Salud Viña del Mar Quillota"      ~ PAC_z[14],
+       SEXO == "Mujer"  & Servicio_salud == "Servicio de Salud Valparaíso San Antonio"     ~ PAC_z[15],
+       SEXO == "Hombre" & Servicio_salud == "Servicio de Salud Valparaíso San Antonio"     ~ PAC_z[16],
+       SEXO == "Mujer"  & Servicio_salud == "Servicio de Salud Metropolitano Central"      ~ PAC_z[17],
+       SEXO == "Hombre" & Servicio_salud == "Servicio de Salud Metropolitano Central"      ~ PAC_z[18],
+       SEXO == "Mujer"  & Servicio_salud == "Servicio de Salud Metropolitano Norte"        ~ PAC_z[19],
+       SEXO == "Hombre" & Servicio_salud == "Servicio de Salud Metropolitano Norte"        ~ PAC_z[20],
+       SEXO == "Mujer"  & Servicio_salud == "Servicio de Salud Metropolitano Occidente"    ~ PAC_z[21],
+       SEXO == "Hombre" & Servicio_salud == "Servicio de Salud Metropolitano Occidente"    ~ PAC_z[22],
+       SEXO == "Mujer"  & Servicio_salud == "Servicio de Salud Metropolitano Oriente"      ~ PAC_z[23],
+       SEXO == "Hombre" & Servicio_salud == "Servicio de Salud Metropolitano Oriente"      ~ PAC_z[24],
+       SEXO == "Mujer"  & Servicio_salud == "Servicio de Salud Metropolitano Sur"          ~ PAC_z[25],
+       SEXO == "Hombre" & Servicio_salud == "Servicio de Salud Metropolitano Sur"          ~ PAC_z[26],
+       SEXO == "Mujer"  & Servicio_salud == "Servicio de Salud Metropolitano Sur Oriente"  ~ PAC_z[27],
+       SEXO == "Hombre" & Servicio_salud == "Servicio de Salud Metropolitano Sur Oriente"  ~ PAC_z[28],
+       SEXO == "Mujer"  & Servicio_salud == "Servicio de Salud Del Libertador B.O'Higgins" ~ PAC_z[29],
+       SEXO == "Hombre" & Servicio_salud == "Servicio de Salud Del Libertador B.O'Higgins" ~ PAC_z[30],
+       SEXO == "Mujer"  & Servicio_salud == "Servicio de Salud Del Maule"                  ~ PAC_z[31],
+       SEXO == "Hombre" & Servicio_salud == "Servicio de Salud Del Maule"                  ~ PAC_z[32],
+       SEXO == "Mujer"  & Servicio_salud == "Servicio de Salud Arauco"                     ~ PAC_z[33],
+       SEXO == "Hombre" & Servicio_salud == "Servicio de Salud Arauco"                     ~ PAC_z[34],
+       SEXO == "Mujer"  & Servicio_salud == "Servicio de Salud Biobío"                     ~ PAC_z[35],
+       SEXO == "Hombre" & Servicio_salud == "Servicio de Salud Biobío"                     ~ PAC_z[36],
+       SEXO == "Mujer"  & Servicio_salud == "Servicio de Salud Concepción"                 ~ PAC_z[37],
+       SEXO == "Hombre" & Servicio_salud == "Servicio de Salud Concepción"                 ~ PAC_z[38],
+       SEXO == "Mujer"  & Servicio_salud == "Servicio de Salud Talcahuano"                 ~ PAC_z[39],
+       SEXO == "Hombre" & Servicio_salud == "Servicio de Salud Talcahuano"                 ~ PAC_z[40],
+       SEXO == "Mujer"  & Servicio_salud == "Servicio de Salud Ñuble"                      ~ PAC_z[41],
+       SEXO == "Hombre" & Servicio_salud == "Servicio de Salud Ñuble"                      ~ PAC_z[42],
+       SEXO == "Mujer"  & Servicio_salud == "Servicio de Salud Araucanía Norte"            ~ PAC_z[43],
+       SEXO == "Hombre" & Servicio_salud == "Servicio de Salud Araucanía Norte"            ~ PAC_z[44],
+       SEXO == "Mujer"  & Servicio_salud == "Servicio de Salud Araucanía Sur"              ~ PAC_z[45],
+       SEXO == "Hombre" & Servicio_salud == "Servicio de Salud Araucanía Sur"              ~ PAC_z[46],
+       SEXO == "Mujer"  & Servicio_salud == "Servicio de Salud Del Reloncaví"              ~ PAC_z[47],
+       SEXO == "Hombre" & Servicio_salud == "Servicio de Salud Del Reloncaví"              ~ PAC_z[48],
+       SEXO == "Mujer"  & Servicio_salud == "Servicio de Salud Los Rios"                   ~ PAC_z[49],
+       SEXO == "Hombre" & Servicio_salud == "Servicio de Salud Los Rios"                   ~ PAC_z[50],
+       SEXO == "Mujer"  & Servicio_salud == "Servicio de Salud Magallanes"                 ~ PAC_z[51],
+       SEXO == "Hombre" & Servicio_salud == "Servicio de Salud Magallanes"                 ~ PAC_z[52],
+       SEXO == "Mujer"  & Servicio_salud == "Servicio de Salud Osorno"                     ~ PAC_z[53],
+       SEXO == "Hombre" & Servicio_salud == "Servicio de Salud Osorno"                     ~ PAC_z[54],
+       SEXO == "Mujer"  & Servicio_salud == "Servicio de Salud Aysén"                      ~ PAC_z[55],
+       SEXO == "Hombre" & Servicio_salud == "Servicio de Salud Aysén"                      ~ PAC_z[56],
+       SEXO == "Mujer"  & Servicio_salud == "Servicio de Salud Chiloé"                     ~ PAC_z[57],
+       SEXO == "Hombre" & Servicio_salud == "Servicio de Salud Chiloé"                     ~ PAC_z[58]
+     ))
+   
+###########################################################################  
+   
+## 3. Reconceptualización de la PAC
+   ## La PAC corresponde al porcentaje anual de cambio de la tasa de incidencias, es decir:
+   ##                        PAC = exp(B_año) = ( (tasa año i+1) / tasa año i) -1) * 100  
+   ## entonces:
+   ##                        PAC = ( (tasa año i+1) / tasa año i) -1) * 100   /  *(1/100)
+   ##                  PAC / 100 = ( (tasa año i+1) / tasa año i) -1          /  + 1
+   ##               (PAC/100) +1 =  (tasa año i+1) / tasa año i               / * (tasa año i)
+   ## ( tasa año i * ((PAC/100)+1) )^año proyectado = (tasa año i+1)
+
+        ## la "tasa año i" es la calculada en el paso 2 (tasa_acum_esp). Para la proyección se considera que esa tasa representa a la tasa del año i = 2018 (año intermedio entre el 2015 y 2019). Entonces, las proyecciones son a partir de ese año. La proyecciones seran por 10 años desde el año i (igual que el minsal) en un determinado sexo y quinquenio
+   
+    proyecciones <- purrr::map(1:10, ~   ## iterar sobre el vector 1:10 (años a proyectar)
+                          
+                          {              ## en cada iteración hacer lo siguente {\XOX/}
+    
+      
+    tibble(!!paste0("tasa_proy_",        ## crear en tibble cuyo nombre será "tasa_proy_" 
+                    .x) :=               ## y la iteración que se está haciendo
+             
+                                         ## con !! se pone el string creado como nombre de la columnna
+                                         ## con := asigna el nombre generado a la columna
+             
+             ## los valores de la columna se calculan como:
+             incidencia_acum$tasa_acum_esp * (1 + incidencia_acum$PAC/100)^.x)
+  }
+             ## como esto está dentro del map, se genera una lista con 10 tibble 
+  
+  ) |> list_cbind()                      ## se unen los tibble en un df (proyecciones)
+  
+  incidencia_acum_2 <- bind_cols(incidencia_acum, proyecciones) ## se unen al df original en el mismo orden.
+  
+  
+
+##################################################################################### 
+  
+## 4. Cálculo de casos proyectados por año
+  ## los casos proyectados desde el año i (2019) al año k (2028), para cada quinquenio y sexo, se ob multiplicando las proyecciones de pob (df = c) de cada año sexo y quinquenio por la tasa proyectada obtenida en el paso 3
+  
+  incidencia_acum_3 <- incidencia_acum_2 %>%
+    rename("2013" = "tasa_proy_1" ,
+           "2014" = "tasa_proy_2" ,
+           "2015" = "tasa_proy_3" ,
+           "2016" = "tasa_proy_4" ,
+           "2017" = "tasa_proy_5" ,
+           "2018" = "tasa_proy_6" ,
+           "2019" = "tasa_proy_7" ,
+           "2020" = "tasa_proy_8" ,
+           "2021" = "tasa_proy_9" ,
+           "2022" = "tasa_proy_10" ) %>%
+    pivot_longer(
+      cols = matches("^20\\d{2}$"),
+      names_to = "AÑO",
+      values_to = "tasa_proyec") %>%
+    mutate(AÑO = as.integer(AÑO))
+  
+  
+  c <- c %>%
+    group_by(SEXO, QUINQUENIO, AÑO, Servicio_salud) %>%
+    summarise(POBLACION = sum(POBLACION))
+  
+  incidencia_acum_4 <- incidencia_acum_3 %>%
+    left_join(c, by = c("Servicio_salud", "SEXO", "AÑO", "QUINQUENIO")) %>%
+    mutate(CASOS_PROYECT = tasa_proyec * POBLACION,
+           AÑO = factor(AÑO))
+  
+  incidencia_acum_5 <- incidencia_acum_4 %>%
+    group_by(AÑO, Servicio_salud, SEXO, QUINQUENIO) %>%
+    summarise(casos = sum(CASOS_PROYECT))
+  
+  
+  
+  
+##############################################################################################  
+## salidas: PAC y tasas acumuladas
+  return(list(
+    
+    ## lista de betas
+    PAC = PAC_z, 
+    
+    ## proyeccion de la tasa
+    proyecciones = proyecciones,
+    
+    ## incidencia acumulada entre 2013:2017
+    incidencia_1 = incidencia_acum,
+    
+    ## tasas proyectadas wide
+    incidencia_acum_2 = incidencia_acum_2,
+    
+    ## tasas proyectadas long
+    incidencia_acum_3 = incidencia_acum_3,
+    
+    ## proyecciones poblacionales
+    c = c,
+    
+    ## tasas proyecctadas unidas a c y calculo de casos proyectados
+    incidencia_acum_4 = incidencia_acum_4,
+    
+    ## suma de casos por ss, sexo, quinquenio y año
+    incidencia_acum_5 = incidencia_acum_5
+              ))
+
+}
+
+```
+
+```{r}
+PAC_SS <- PAC(betas,                   ## coef del año
+              datos.completos,       ## datos de con los que predecir
+              pob.quinquenio)          ## Poblaciones
+
+
+
+casos_proyectados <- PAC_SS$incidencia_acum_5 %>% 
+  mutate(casos = round(casos)) %>% 
+  group_by(AÑO, Servicio_salud) %>% 
+  summarise(casos = sum(casos))
+```
+
+```{r fig.width=15, fig.height= 20}
+## plot proyecciones
+
+proyec_plot <- ggplot(data = casos_proyectados, aes(x = AÑO, y = casos,  group = Servicio_salud)) +
+  geom_line(color =  "steelblue", linewidth = 1) +
+  geom_point(color = "steelblue", size = 2) +
+  facet_wrap(~ Servicio_salud, scales = "free_y", ncol = 3) +
+  scale_y_continuous(labels = scales::label_number(accuracy = 1, big.mark = "")) +
+  theme_minimal(base_size = 13) +
+  labs(
+    title = "Proyeccion de nuevos casos de CG por año y Servicio de Salud",
+    x = "Año",
+    y = "Número de casos"
+  ) +
+  theme(
+    strip.background = element_rect(fill = "gray90", color = NA),
+    strip.text = element_text(face = "bold"),
+    plot.title = element_text(hjust = 0.5)
+  )
+
+
+proyec_plot
+# ggsave("proyeccion_ss_minsal.jpeg",  proyec_plot, width = 15, height = 20, dpi = 300)
+
+
+## agrupar facet de graficos por macrozonas para que las escalas sean más similares.
+```
+
+## guardar datos
+
+```{r}
+save(casos_proyectados, file = "casos_proyectados_PAC_MINSAL.RData")
+```

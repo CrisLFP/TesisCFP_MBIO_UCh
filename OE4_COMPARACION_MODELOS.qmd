@@ -1,0 +1,542 @@
+---
+title: "OE4_COMPARACION_MODELOS"
+author: "CFP"
+format: html
+editor: visual
+---
+
+```{r}
+gc()
+setwd("~/Desktop/U_CHILE/MG_BIOESTADÍSTICA/TESIS/DATOS PÚBLICOS/OE4")
+```
+
+```{r}
+library(tidyverse)  ## administración de datos y creación de plots
+library(Metrics)    ## cálculo de medidas de error
+library(dtw)        ## cálculo de dtw y plots
+library(purrr)      ## iteraciones
+library(flextable)  ## exportar tablas en word
+library(officer)
+```
+
+```{r}
+load("~/Desktop/U_CHILE/MG_BIOESTADÍSTICA/TESIS/DATOS PÚBLICOS/OE3/datos_fina.RData")
+```
+
+```{r fig.width= 25, fig.height=27}
+
+datos_final <- datos_final %>% 
+  mutate(tipo = factor(tipo,
+                       levels = c("OBSERVADO","PREDICHO_TS", "PREDICHO_PAC"))) %>% 
+  filter(Servicio_salud %in% c(
+    "Servicio de Salud Antofagasta",
+    "Servicio de Salud Araucanía Sur",
+    "Servicio de Salud Concepción",
+    "Servicio de Salud Del Reloncaví",
+    "Servicio de Salud Los Rios",
+    "Servicio de Salud Metropolitano Central",
+    "Servicio de Salud Metropolitano Norte",
+    "Servicio de Salud Metropolitano Occidente",
+    "Servicio de Salud Metropolitano Oriente",
+    "Servicio de Salud Metropolitano Sur",
+    "Servicio de Salud Viña del Mar Quillota",
+    "Servicio de Salud Talcahuano"
+  ))
+
+etiqueta_df <- datos_final %>% 
+  group_by(Servicio_salud) %>% 
+  summarise(y = max(valor, na.rm = TRUE))
+
+plot_prediccion <- ggplot(datos_final,
+       aes(x = AÑO, y = valor,
+           colour = tipo,
+           group = tipo,
+           linetype = tipo)) +
+  geom_line(linewidth = 1) +
+  geom_point() +
+  
+  facet_wrap(~ Servicio_salud,
+             ncol = 2,
+             scales = "free_y") +
+  geom_vline(
+    xintercept = 2019,
+    linetype = "dashed",
+    color = "black",
+    linewidth = 0.8 ) +
+  geom_text(
+    data = etiqueta_df,
+    aes(x = 2019 + 0.3, y = y),
+    label = "Forecasting",
+    inherit.aes = FALSE,
+    hjust = 0,
+    vjust = 1,
+    size = 5) +
+  
+   scale_x_continuous(
+    breaks = seq(min(datos_final$AÑO), max(datos_final$AÑO), by = 1))+
+  
+   labs(
+    title = "Proyección de incidencias de CG por Servicio de Salud",
+    y = "Incidencias",
+    x = "Año") +
+  
+  theme_minimal(base_size = 13) +
+  
+  guides(
+    colour = guide_legend(override.aes = list(linewidth = 2, size = 4)),
+    linetype = guide_legend(override.aes = list(linewidth = 2)))+ 
+  theme(
+    strip.background = element_rect(fill = "gray90", color = NA),
+    strip.text = element_text(face = "bold", size = 14),
+    plot.title = element_text(hjust = 0.5, size = 30, face = "bold"),
+    legend.position = "bottom",
+    legend.text = element_text(size = 20),
+    axis.title.y = element_text(size = 25),
+    legend.title = element_blank()
+  )
+
+plot_prediccion
+ggsave(plot = plot_prediccion, filename = "plot_predicción.jpeg", width = 25, height = 27)
+
+```
+
+```{r}
+## evaluación de modelos.
+eval <- datos_final %>% 
+  filter(between(AÑO, 2013, 2019),
+         Servicio_salud %in% c(  "Servicio de Salud Antofagasta",
+    "Servicio de Salud Araucanía Sur",
+    "Servicio de Salud Concepción",
+    "Servicio de Salud Del Reloncaví",
+    "Servicio de Salud Los Rios",
+    "Servicio de Salud Metropolitano Central",
+    "Servicio de Salud Metropolitano Norte",
+    "Servicio de Salud Metropolitano Occidente",
+    "Servicio de Salud Metropolitano Oriente",
+    "Servicio de Salud Metropolitano Sur",
+    "Servicio de Salud Viña del Mar Quillota",
+    "Servicio de Salud Talcahuano"))
+
+###########################################
+## mtab: error medio absoluto
+mae_pac <- Metrics::mae(actual =  eval %>% filter(tipo == "OBSERVADO") %>% pull(valor), 
+                        predicted = eval %>% filter(tipo == "PREDICHO_PAC") %>% pull(valor)) 
+mae_tscount <-Metrics::mae(actual =  eval %>% filter(tipo == "OBSERVADO") %>% pull(valor), 
+                        predicted = eval %>% filter(tipo == "PREDICHO_TS") %>% pull(valor))
+
+## mape: error porcentual medio absoluto
+mape_pac <- Metrics::mape(actual = eval %>% filter(tipo == "OBSERVADO") %>% pull(valor), 
+                          predicted = eval %>% filter(tipo == "PREDICHO_PAC") %>% pull(valor))
+mape_tscount <- Metrics::mape(actual =  eval %>% filter(tipo == "OBSERVADO") %>% pull(valor), 
+                              predicted = eval %>% filter(tipo == "PREDICHO_TS") %>% pull(valor))
+  
+# smape: error porcentual medio absoluto simétrico
+smape_pac <- Metrics::smape(actual =  eval %>% filter(tipo == "OBSERVADO") %>% pull(valor), 
+                        predicted = eval %>% filter(tipo == "PREDICHO_PAC") %>% pull(valor))
+smape_tscount <- Metrics::smape(actual =  eval %>% filter(tipo == "OBSERVADO") %>% pull(valor), 
+                        predicted = eval %>% filter(tipo == "PREDICHO_TS") %>% pull(valor))
+
+df_metricas <- data.frame(
+  Métrica = c("MAE", "MAE", "MAPE", "MAPE", "sMAPE", "sMAPE"),
+  Método = rep(c("PAC", "TS_COUNT"), 3),
+  Valor = c(mae_pac, mae_tscount, mape_pac, mape_tscount, smape_pac, smape_tscount)
+)
+
+```
+
+```{r}
+eval_wide <- eval %>% 
+  select(Servicio_salud, AÑO, tipo, valor) %>% 
+  pivot_wider(
+    names_from = tipo,
+    values_from = valor
+  )
+
+
+df_metricas_2 <- eval_wide %>% 
+  group_by(Servicio_salud) %>% 
+  summarise(
+    ## PAC
+    MAE_PAC   = mae(OBSERVADO, PREDICHO_PAC),
+    MAPE_PAC  = mape(OBSERVADO, PREDICHO_PAC),
+    sMAPE_PAC = smape(OBSERVADO, PREDICHO_PAC),
+
+    ## TS_COUNT
+    MAE_TS   = mae(OBSERVADO, PREDICHO_TS),
+    MAPE_TS  = mape(OBSERVADO, PREDICHO_TS),
+    sMAPE_TS = smape(OBSERVADO, PREDICHO_TS),
+    
+    .groups = "drop"
+  )
+
+tabla_word <- flextable(df_metricas_2) %>% 
+  autofit()
+
+doc <- read_docx() %>% 
+  body_add_par("Evaluación de desempeño de modelos", style = "heading 1") %>% 
+  body_add_flextable(tabla_word)
+
+print(doc, target = "metricas_modelos.docx")
+
+```
+
+## DTW TS versus PAC
+```{r}
+# DTW: deformación dinámica del tiempo en terminos de la magnitud de incidencias.
+dtw_resultados <- datos_final %>% 
+  ## datos para evaluar
+  filter(tipo %in% c("OBSERVADO", "PREDICHO_TS"),
+         AÑO < 2020) %>% 
+  ## ordenar datos
+  arrange(Servicio_salud, tipo, AÑO) %>% 
+  ## agrupar
+  group_by(Servicio_salud) %>% 
+  ## resumen de resultados
+  summarise(
+    ## don dtw::dtw
+    dtw = dtw::dtw(
+      x = valor[tipo == "OBSERVADO"],         ## vector de observados por ss
+      y = valor[tipo == "PREDICHO_TS"],       ## vector de predichos por ss
+      
+    ## algoritmo del DTW  
+      window.type = "sakoechiba",             ## alineación del camino en el timepo real (diagonal)
+      window.size = 3,                        ## maxima separación de la diagonal en 2 tiempos
+      distance.only = TRUE                    ## solo cálculo de la métrica de error
+    )$normalizedDistance,                     ## obtener las distancias normalizadas por la longitud del camino obtenido
+    .groups = "drop"
+  )
+
+dtw_resultados <- dtw_resultados %>% 
+  arrange(dtw)
+
+## mide la magnitud, la forma y el timing de la serie observada versus la predicha.
+## En cuantos casos falla tscount en promedio en el mejor alineamiento.
+```
+
+```{r}
+dtw_scale <- datos_final %>% 
+  ## datos para evaluar
+  filter(tipo %in% c("OBSERVADO", "PREDICHO_TS"),
+         AÑO < 2020) %>% 
+  ## ordenar datos
+  arrange(Servicio_salud, tipo, AÑO) %>% 
+  ## agrupar
+  group_by(Servicio_salud) %>% 
+  ## resumen de resultados
+  summarise(
+    ## don dtw::dtw
+    dtw = dtw::dtw(
+            x = scale(valor[tipo == "OBSERVADO"])[,1],
+            y = scale(valor[tipo == "PREDICHO_TS"])[,1],
+            window.type = "sakoechiba",
+            window.size = 3,
+            distance.only = TRUE
+)$normalizedDistance,                     ## obtener las distancias normalizadas por la longitud del camino obtenido
+    .groups = "drop"
+  )
+
+dtw_scale <- dtw_scale %>% 
+  arrange(dtw)
+
+## evalúa solo la forma temporal y rezagos, sin magnitud (de incidencias en este caso).
+## la dinámica temporal de tscount es similar a la observada aunque la magnitud este mal?
+```
+
+```{r fig.width= 15}
+dtw_data <- dtw_resultados %>% 
+  rename(DTW_bruto = dtw) %>% 
+  left_join(dtw_scale, by = "Servicio_salud") %>% 
+  rename(DTW_forma = dtw)
+
+## cuadrantes
+corte_forma <- mean(dtw_data$DTW_forma, na.rm = TRUE)
+corte_prediccion <- mean(dtw_data$DTW_bruto, na.rm = TRUE)
+
+## plot con cuadrantes
+dtw_eval <- ggplot(dtw_data, aes(x = DTW_forma, y = DTW_bruto, label = Servicio_salud)) +
+  geom_point(color = "blue", alpha = 0.7) +
+  
+  # Las dos rectas divisorias
+  geom_vline(xintercept = corte_forma, linetype = "dashed", color = "red") +
+  geom_hline(yintercept = corte_prediccion, linetype = "dashed", color = "red") +
+  
+  ggrepel::geom_text_repel(size = 4) + # que no se solapen
+  
+  labs(
+    title = "Diagnóstico de DTW: forma respecto a magnitud",
+    x = "Error de Forma (DTW Escalado)",
+    y = "Error de Magnitud (DTW Bruto)"
+  ) +
+  theme_minimal()
+
+dtw_eval
+ ggsave(plot = dtw_eval, filename = "dtw_eval.jpeg", width = 15)
+
+```
+
+```{r fig.height=18, fig.width=30}
+## plots dtw
+
+dtw_plots <- datos_final %>% 
+  filter(
+    tipo %in% c("OBSERVADO", "PREDICHO_TS"),
+    AÑO < 2020
+  ) %>% 
+  arrange(Servicio_salud, AÑO) %>% 
+  group_by(Servicio_salud) %>% 
+  summarise(
+    dtw_obj = list(
+      dtw::dtw(
+        x = valor[tipo == "OBSERVADO"],
+        y = valor[tipo == "PREDICHO_TS"],
+        window.type = "sakoechiba",
+        window.size = 2,
+        keep.internals = TRUE
+      )
+    ),
+    .groups = "drop"
+  )
+
+
+dtw_paths <- dtw_plots %>% 
+  mutate(
+    path = map2(dtw_obj, Servicio_salud, ~ {
+      
+      ss <- .y
+      dtw_ss <- .x
+      
+      # años observados
+      años_obs <- datos_final %>% 
+        filter(
+          Servicio_salud == ss,
+          tipo == "OBSERVADO",
+          AÑO < 2020
+        ) %>% 
+        arrange(AÑO) %>% 
+        pull(AÑO)
+      
+      # años predichos
+      años_pred <- datos_final %>% 
+        filter(
+          Servicio_salud == ss,
+          tipo == "PREDICHO_TS",
+          AÑO < 2020
+        ) %>% 
+        arrange(AÑO) %>% 
+        pull(AÑO)
+      
+      tibble(
+  año_obs  = años_obs[dtw_ss$index1],
+  año_pred = años_pred[dtw_ss$index2]
+)
+    })
+  ) %>% 
+  select(Servicio_salud, path) %>% 
+  unnest(path)
+
+dtw_plot <- ggplot(dtw_paths, aes(x = año_obs, y = año_pred)) +
+  geom_path(color = "steelblue", linewidth = 1) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "grey40") +
+  facet_wrap(~ Servicio_salud, scales = "free") +
+  theme_minimal(base_size = 12) +
+  scale_x_continuous(
+    breaks = seq(min(dtw_paths$año_pred), max(dtw_paths$año_pred), by = 1))+
+  scale_y_continuous(
+    breaks = seq(min(dtw_paths$año_obs), max(dtw_paths$año_obs), by = 1))+
+  labs(
+    title = "Algoritmo de optimización de DTW por Servicio de Salud",
+    x = "Año (Observado)",
+    y = "Año (Predicho TS)"
+  ) +
+  theme(
+    strip.background = element_rect(fill = "gray90", color = NA),
+    strip.text = element_text(face = "bold", size = 20),
+    plot.title = element_text(hjust = 0.5, size = 30, face = "bold"),
+    axis.title.y = element_text(size = 18),
+    axis.title.x = element_text(size = 18)
+  )
+ 
+dtw_plot
+ggsave(plot = dtw_plot, filename = "dtw_plot.jpeg", width = 30, height = 15)
+```
+
+## DTW PAC versus obs considerar que aqui son menos años de observación. no se hizo.
+```{r}
+# DTW: deformación dinámica del tiempo en terminos de la magnitud de incidencias.
+dtw_resultados <- datos_final %>% 
+  ## datos para evaluar
+  filter(tipo %in% c("OBSERVADO", "PREDICHO_TS"),
+         between(AÑO, 2013, 2018)) %>% 
+  ## ordenar datos
+  arrange(Servicio_salud, tipo, AÑO) %>% 
+  ## agrupar
+  group_by(Servicio_salud) %>% 
+  ## resumen de resultados
+  summarise(
+    ## don dtw::dtw
+    dtw = dtw::dtw(
+      x = valor[tipo == "OBSERVADO"],         ## vector de observados por ss
+      y = valor[tipo == "PREDICHO_TS"],       ## vector de predichos por ss
+      
+    ## algoritmo del DTW  
+      window.type = "sakoechiba",             ## alineación del camino en el timepo real (diagonal)
+      window.size = 3,                        ## maxima separación de la diagonal en 2 tiempos
+      distance.only = TRUE                    ## solo cálculo de la métrica de error
+    )$normalizedDistance,                     ## obtener las distancias normalizadas por la longitud del camino obtenido
+    .groups = "drop"
+  )
+
+dtw_resultados <- dtw_resultados %>% 
+  arrange(dtw)
+
+## mide la magnitud, la forma y el timing de la serie observada versus la predicha.
+## En cuantos casos falla tscount en promedio en el mejor alineamiento.
+```
+
+```{r}
+dtw_scale <- datos_final %>% 
+  ## datos para evaluar
+  filter(tipo %in% c("OBSERVADO", "PREDICHO_TS"),
+         AÑO < 2020) %>% 
+  ## ordenar datos
+  arrange(Servicio_salud, tipo, AÑO) %>% 
+  ## agrupar
+  group_by(Servicio_salud) %>% 
+  ## resumen de resultados
+  summarise(
+    ## don dtw::dtw
+    dtw = dtw::dtw(
+            x = scale(valor[tipo == "OBSERVADO"])[,1],
+            y = scale(valor[tipo == "PREDICHO_TS"])[,1],
+            window.type = "sakoechiba",
+            window.size = 3,
+            distance.only = TRUE
+)$normalizedDistance,                     ## obtener las distancias normalizadas por la longitud del camino obtenido
+    .groups = "drop"
+  )
+
+dtw_scale <- dtw_scale %>% 
+  arrange(dtw)
+
+## evalúa solo la forma temporal y rezagos, sin magnitud (de incidencias en este caso).
+## la dinámica temporal de tscount es similar a la observada aunque la magnitud este mal?
+```
+
+```{r fig.width= 15}
+dtw_data <- dtw_resultados %>% 
+  rename(DTW_bruto = dtw) %>% 
+  left_join(dtw_scale, by = "Servicio_salud") %>% 
+  rename(DTW_forma = dtw)
+
+## cuadrantes
+corte_forma <- mean(dtw_data$DTW_forma, na.rm = TRUE)
+corte_prediccion <- mean(dtw_data$DTW_bruto, na.rm = TRUE)
+
+## plot con cuadrantes
+dtw_eval <- ggplot(dtw_data, aes(x = DTW_forma, y = DTW_bruto, label = Servicio_salud)) +
+  geom_point(color = "blue", alpha = 0.7) +
+  
+  # Las dos rectas divisorias
+  geom_vline(xintercept = corte_forma, linetype = "dashed", color = "red") +
+  geom_hline(yintercept = corte_prediccion, linetype = "dashed", color = "red") +
+  
+  ggrepel::geom_text_repel(size = 4) + # que no se solapen
+  
+  labs(
+    title = "Diagnóstico de DTW: forma respecto a magnitud",
+    x = "Error de Forma (DTW Escalado)",
+    y = "Error de Magnitud (DTW Bruto)"
+  ) +
+  theme_minimal()
+
+dtw_eval
+ ggsave(plot = dtw_eval, filename = "dtw_eval.jpeg", width = 15)
+
+```
+
+```{r fig.height=18, fig.width=30}
+## plots dtw
+
+dtw_plots <- datos_final %>% 
+  filter(
+    tipo %in% c("OBSERVADO", "PREDICHO_PAC"),
+    AÑO < 2020
+  ) %>% 
+  arrange(Servicio_salud, AÑO) %>% 
+  group_by(Servicio_salud) %>% 
+  summarise(
+    dtw_obj = list(
+      dtw::dtw(
+        x = valor[tipo == "OBSERVADO"],
+        y = valor[tipo == "PREDICHO_TS"],
+        window.type = "sakoechiba",
+        window.size = 2,
+        keep.internals = TRUE
+      )
+    ),
+    .groups = "drop"
+  )
+
+
+dtw_paths <- dtw_plots %>% 
+  mutate(
+    path = map2(dtw_obj, Servicio_salud, ~ {
+      
+      ss <- .y
+      dtw_ss <- .x
+      
+      # años observados
+      años_obs <- datos_final %>% 
+        filter(
+          Servicio_salud == ss,
+          tipo == "OBSERVADO",
+          AÑO < 2020
+        ) %>% 
+        arrange(AÑO) %>% 
+        pull(AÑO)
+      
+      # años predichos
+      años_pred <- datos_final %>% 
+        filter(
+          Servicio_salud == ss,
+          tipo == "PREDICHO_TS",
+          AÑO < 2020
+        ) %>% 
+        arrange(AÑO) %>% 
+        pull(AÑO)
+      
+      tibble(
+  año_obs  = años_obs[dtw_ss$index1],
+  año_pred = años_pred[dtw_ss$index2]
+)
+    })
+  ) %>% 
+  select(Servicio_salud, path) %>% 
+  unnest(path)
+
+dtw_plot <- ggplot(dtw_paths, aes(x = año_obs, y = año_pred)) +
+  geom_path(color = "steelblue", linewidth = 1) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "grey40") +
+  facet_wrap(~ Servicio_salud, scales = "free") +
+  theme_minimal(base_size = 12) +
+  scale_x_continuous(
+    breaks = seq(min(dtw_paths$año_pred), max(dtw_paths$año_pred), by = 1))+
+  scale_y_continuous(
+    breaks = seq(min(dtw_paths$año_obs), max(dtw_paths$año_obs), by = 1))+
+  labs(
+    title = "Algoritmo de optimización de DTW por Servicio de Salud",
+    x = "Año (Observado)",
+    y = "Año (Predicho TS)"
+  ) +
+  theme(
+    strip.background = element_rect(fill = "gray90", color = NA),
+    strip.text = element_text(face = "bold", size = 20),
+    plot.title = element_text(hjust = 0.5, size = 30, face = "bold"),
+    axis.title.y = element_text(size = 18),
+    axis.title.x = element_text(size = 18)
+  )
+ 
+dtw_plot
+ggsave(plot = dtw_plot, filename = "dtw_plot.jpeg", width = 30, height = 15)
+```
+

@@ -1,0 +1,3086 @@
+---
+title: "OE2_RIM_ALTERNATIVOS"
+author: "CFP"
+format: html
+editor: visual
+---
+
+```{r}
+gc()
+setwd("~/Desktop/U_CHILE/MG_BIOESTADÍSTICA/TESIS/DATOS PÚBLICOS/OE2")
+```
+
+```{r}
+library(tidyverse)             ## adm de datos
+library(summarytools)          ## libreria de resúmenes.
+library(glmmTMB)               ## intervalos de predicción
+library(DHARMa)                ## analisis de residuos
+library(marginaleffects)       ## efectos marginales.
+library(easystats)             ## evaluación del modelo
+library(yardstick)             ## evaluar modelos de MachineLearning
+```
+
+## Carga de datos de incidencia
+
+```{r}
+## Carga de datos de incidencia quinquenios
+load("~/Desktop/U_CHILE/MG_BIOESTADÍSTICA/TESIS/DATOS PÚBLICOS/REGISTRO POBALCIONAL DE CÁNCER/incidencias_oe2.RData")
+
+##############################################
+
+## carga de datos de incidencias tercil.
+load("~/Desktop/U_CHILE/MG_BIOESTADÍSTICA/TESIS/DATOS PÚBLICOS/REGISTRO POBALCIONAL DE CÁNCER/incidencias_tercil_oe2.RData")
+incidencias_tercil <- incidencias_tercil_oe2 %>% 
+  rename(AÑO = Año_diag,
+         SEXO = Sexo)
+rm(incidencias_tercil_oe2)
+
+##############################################
+
+## carga de datos de incidencias cuartil
+load("~/Desktop/U_CHILE/MG_BIOESTADÍSTICA/TESIS/DATOS PÚBLICOS/REGISTRO POBALCIONAL DE CÁNCER/incidencias_cuartil_oe2.RData")
+incidencias_cuartil <- incidencias_cuartil_oe2 %>% 
+  rename(AÑO = Año_diag,
+         SEXO = Sexo)
+rm(incidencias_cuartil_oe2)
+```
+
+## Carga de datos defunciones
+
+```{r}
+## carga de datos de defunciones quinquenios
+load("~/Desktop/U_CHILE/MG_BIOESTADÍSTICA/TESIS/DATOS PÚBLICOS/DEF_DEIS/defunciones_oe2.RData") 
+incidencias <- incidencias_oe2 %>% 
+  mutate(AÑO = as.character(AÑO),
+         AÑO = as.numeric(AÑO))
+
+##############################################
+
+## carga de datos defunciones terciles
+load("~/Desktop/U_CHILE/MG_BIOESTADÍSTICA/TESIS/DATOS PÚBLICOS/DEF_DEIS/def_oe2_tercil.RData") 
+defunciones_tercil <- tasa.def.sexo.tercil %>% 
+  select(-POBLACION, -tasa)
+rm(tasa.def.sexo.tercil)
+
+##############################################
+
+## carga de dato defunciones cuartil
+load("~/Desktop/U_CHILE/MG_BIOESTADÍSTICA/TESIS/DATOS PÚBLICOS/DEF_DEIS/defunciones_oe2_cuartil.RData")
+defunciones_cuartil <- def.6
+rm(def.6)
+```
+
+# Carga de datos proporciones anuales.
+
+```{r}
+load("~/Desktop/U_CHILE/MG_BIOESTADÍSTICA/TESIS/DATOS PÚBLICOS/REGISTRO POBALCIONAL DE CÁNCER/prop_casos_año.RData")
+defunciones <- defunciones_oe2 
+
+## carga de datos prop de casos por año en cada zona
+load("~/Desktop/U_CHILE/MG_BIOESTADÍSTICA/TESIS/DATOS PÚBLICOS/REGISTRO POBALCIONAL DE CÁNCER/prop_zona_año.RData")
+
+## carga de datos por zona.
+load("~/Desktop/U_CHILE/MG_BIOESTADÍSTICA/TESIS/DATOS PÚBLICOS/REGISTRO POBALCIONAL DE CÁNCER/df_zonas.RData")
+```
+
+# Modelo con datos match
+
+### m1 sin cov AÑO
+
+```{r}
+datos.m1 <- left_join(incidencias,
+                          defunciones,    
+                          by = c("Servicio_salud",
+                               "SEXO",
+                               "AÑO",
+                               "QUINQUENIO")) %>% 
+  mutate(
+    SEXO = factor(SEXO),
+    QUINQUENIO = factor(QUINQUENIO),
+    Servicio_salud = factor(Servicio_salud) ) %>% 
+  
+  filter(!(QUINQUENIO %in% c("10-14", "0-4", "5-9", "15-19"))) %>% 
+
+  droplevels() %>% 
+  
+  group_by(Servicio_salud, SEXO, QUINQUENIO) %>% 
+  summarise(incidencias = sum(incidencias, na.rm = T),
+            defunciones = sum(defunciones, na.rm = T)) %>% 
+  
+  droplevels() %>% 
+  
+  filter(defunciones != 0)
+
+## definir categoria de referencia
+datos.m1$SEXO <- relevel(datos.m1$SEXO, ref = "Mujer")
+
+##############################################################
+
+m1 <- glmmTMB::glmmTMB(
+  formula = incidencias ~ offset(log(defunciones)) + SEXO + QUINQUENIO +   ## variables modelo
+                  (1 | Servicio_salud),                                    ## intercapto aleatorio
+    data = datos.m1,                                                       ## datos
+    family = poisson(link = "log"),
+  
+  ## no usar filas con NA
+  na.action = na.omit)
+
+summary(m1)
+exp_coef <- exp(fixef(m1)$cond)     # $cond extrae la parte condicional
+exp_coef
+
+##############################################################
+
+## evaluación del modelo
+performance::check_model(m1)
+DHARMa::simulateResiduals(m1, plot = T)
+DHARMa::testDispersion(m1) ## hay subdispersión -> dispersión: 0.6 menor a 1.
+```
+
+#### Bondad de ajuste m1
+
+```{r}
+datos_v1 <- datos.m1 
+
+## Estimación media condicional. considera los efectos aleatorios y el BULP
+verif_1 <- predict(m1, 
+                   newdata = datos_v1, 
+                   type = "link",                  ## escala logartimica
+                   se.fit = TRUE,                  ## obtener error estandar
+                   allow.new.levels = T)
+## estimación media marginal. mediante metodo delta, consiera los efectos fijos
+## marginaleffects::predictions(m1)
+## interpretación: Para un servicio promedio, el valor esperado es X ± se
+
+##############################################################
+
+datos_v1 <- datos_v1 %>% 
+  mutate(
+    
+    ## añadir estimaciones + error estandar
+    predicho_link = !!verif_1$fit,
+    se_link = !!verif_1$se.fit,
+    
+    ## calculo de limites de IC 95%
+    inf_limite_link = predicho_link - 1.96 * se_link,
+    sup_limite_link = predicho_link + 1.96 * se_link,
+    
+    ## llevar a escala de respuesta
+    predicho = exp(predicho_link),
+    
+    ## Método delta
+    se = predicho * se_link,
+     
+    ## IC 95%
+    inf_limite = exp(inf_limite_link),
+    sup_limite = exp(sup_limite_link),
+    tipo = "OBSERVADO",
+    
+    ## variable indicadora de si el IC construido contiene el valor observado
+    cobertura_ic = ifelse(incidencias >= inf_limite & incidencias <= sup_limite, 1, 0),
+    
+    ## residuos
+    residuos = incidencias - predicho,
+    residuos_pearson = (incidencias - predicho)/sqrt(predicho),
+    residuos.est = residuos_pearson / se,
+    error_porcentual = ((predicho - incidencias) / incidencias) * 100
+    )
+head(datos_v1)
+```
+
+#### Errores m1
+
+```{r}
+## errores del modelo 
+datos_v1 %>%
+  ungroup() %>% 
+  mutate(truth = incidencias,
+         estimate = predicho) %>%
+  metrics(truth = truth,             ## métricas del modelo
+          estimate = estimate)
+
+## rmse: error cuadrático medio
+## rsq: r2
+## mae: error medio absoluto
+
+( mape1 <- mean(abs((datos_v1$incidencias - datos_v1$predicho) / datos_v1$incidencias), na.rm = T) * 100 )
+## mape de 20%
+
+( cobertura_1 <- mean(datos_v1$cobertura_ic, na.rm = T) *100 ) ## cobertura 53%
+```
+
+#### cálculo prediccion anual país
+
+```{r}
+## total casos predichos pais m1
+casos_predichos <- datos_v1 %>% 
+  ungroup() %>% 
+  summarise(total_casos = round(sum(predicho)))
+casos_predichos
+
+## proporción de casos-año a partir de RPC
+prop_año_m1 <- prop_año %>% 
+  mutate(total_casos = casos_predichos$total_casos,
+         casos_año = round(total_casos * prop_año)) %>% 
+  rename(AÑO = Año_diag)
+prop_año_m1
+
+## casos observados RPC
+casos_año <- incidencias %>% 
+  group_by(AÑO) %>% 
+  summarise(casos_obs = sum(incidencias)) %>% 
+  left_join(prop_año_m1, by = "AÑO")
+
+## muy poco MAPE a nivel de AÑO
+(mape1_1 <- mean(abs((casos_año$casos_obs - casos_año$casos_año) / casos_año$casos_obs), na.rm = T) * 100 )
+```
+
+#### calculo predicción anual SS
+
+```{r}
+## total casos predichos ss m1
+casos_predichos_ss_m1 <- datos_v1 %>% 
+  ungroup() %>% 
+  group_by(Servicio_salud) %>% 
+  summarise(total_casos = round(sum(predicho))) %>% 
+  left_join(df_zonas, by = "Servicio_salud")
+casos_predichos_ss_m1
+
+prop_año_ss_m1 <- casos_zona_año %>% 
+  inner_join(casos_predichos_ss_m1, by = "ZONA") %>% 
+  mutate(total_casos = round(total_casos * prop_zona_año)) %>% 
+  rename(AÑO = Año_diag)
+prop_año_ss_m1
+
+## MAPE a nivel de SS
+(mape2_1 <- mean(abs((prop_año_ss_m1$casos - prop_año_ss_m1$total_casos) / prop_año_ss_m1$casos), na.rm = T) * 100 )
+
+## sMAPE a nivel SS
+( smape2_1 <- mean(2 * abs(prop_año_ss_m1$casos - prop_año_ss_m1$total_casos) / 
+                   (abs(prop_año_ss_m1$casos) + abs(prop_año_ss_m1$total_casos)), 
+                   na.rm = T) * 100 )
+```
+
+```{r}
+plot_ss_1 <- ggplot(prop_año_ss_m1, aes(x = as.numeric(as.character(AÑO)))) +
+
+  geom_line(aes(y = casos, color = "Observado"), size = 1) +
+  geom_point(aes(y = casos, color = "Observado"), size = 1.5) +
+  
+  # Línea del Modelo (Rojo discontinuo)
+  geom_line(aes(y = total_casos, color = "Predicho"), linetype = "dashed", size = 1) +
+  
+  # Separar por Servicio
+  facet_wrap(~Servicio_salud, scales = "free_y") + 
+  
+  theme_minimal() +
+  labs(
+    title = "Validación Modelo M1: Tendencia por Servicio de Salud",
+    subtitle = "Comparación de Casos Totales Anuales",
+    x = "Año",
+    y = "Total de Casos",
+    color = "Incidencia",
+    caption = "Conjunto de datos: coincidencia incidencia y mortalidad.\nM1: sin covariable AÑO"
+  ) +
+  theme(legend.position = "top")
+plot_ss_1
+```
+
+#### Gráfica m1
+
+```{r}
+ggplot(datos_v1, aes(x = predicho, y = incidencias)) +
+  geom_point(alpha = 0.6, color = "blue") +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red") +
+  labs(
+    x = "Predicho por el modelo",
+    y = "Observado",
+    title = "Dispersión Observado vs. Predicho",
+    subtitle = "Línea roja = ajuste perfecto"
+  ) +
+  theme_minimal()
+
+
+ggplot(datos_v1, aes(x = predicho, y = residuos_pearson)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "loess", se = FALSE, color = "blue") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red", linewidth = 1) +
+  labs(
+    title = "Residuos de Pearson vs. Valores Predichos",
+    x = "Valor Predicho (Escala de respuesta)",
+    y = "Residuos de Pearson"
+  ) +
+  theme_minimal()
+```
+
+### m2 cov AÑO
+
+```{r}
+datos.m2 <- left_join(incidencias,
+                          defunciones,    
+                          by = c("Servicio_salud",
+                               "SEXO",
+                               "AÑO",
+                               "QUINQUENIO")) %>% 
+  mutate(
+    SEXO = factor(SEXO),
+    QUINQUENIO = factor(QUINQUENIO),
+    Servicio_salud = factor(Servicio_salud) ) %>% 
+  
+  filter(!(QUINQUENIO %in% c("10-14", "0-4", "5-9", "15-19"))) %>% 
+
+  droplevels() %>% 
+  
+  filter(!is.na(defunciones)) %>% 
+  
+  mutate(AÑO_m = dplyr::recode(AÑO,
+                        "1998" = 1,
+                        "1999" = 2,
+                        "2000" = 3,
+                        "2001" = 4,
+                        "2002" = 5,
+                        "2003" = 6,
+                        "2004" = 7,
+                        "2005" = 8,
+                        "2006" = 9,
+                        "2007" = 10,
+                        "2008" = 11,
+                        "2009" = 12,
+                        "2010" = 13,
+                        "2011" = 14,
+                        "2012" = 15,
+                        "2013" = 16,
+                        "2014" = 17,
+                        "2015" = 18,
+                        "2016" = 19,
+                        "2017" = 20,
+                        "2018" = 21,
+                        "2019" = 22))
+
+########################################################
+
+m2 <- glmmTMB::glmmTMB(
+  formula = incidencias ~ offset(log(defunciones)) + SEXO + QUINQUENIO + AÑO_m +  ## variables modelo
+                  (1 | Servicio_salud),                                    ## intercapto aleatorio
+    data = datos.m2,                                                       ## datos
+    family = poisson(link = "log"),
+  
+  ## no usar filas con NA
+  na.action = na.omit)
+
+summary(m2)
+```
+
+#### Bondad de ajuste m2
+
+```{r}
+datos_v2 <- datos.m2 
+
+## Estimación media condicional. considera los efectos aleatorios y el BULP
+verif_2 <- predict(m2, 
+                   newdata = datos_v2, 
+                   type = "link",                  ## escala logartimica
+                   se.fit = TRUE,                  ## obtener error estandar
+                   allow.new.levels = T)
+
+##############################################################
+
+datos_v2 <- datos_v2 %>% 
+  mutate(
+    
+    ## añadir estimaciones + error estandar
+    predicho_link = !!verif_2$fit,
+    se_link = !!verif_2$se.fit,
+    
+    ## calculo de limites de IC 95%
+    inf_limite_link = predicho_link - 1.96 * se_link,
+    sup_limite_link = predicho_link + 1.96 * se_link,
+    
+    ## llevar a escala de respuesta
+    predicho = exp(predicho_link),
+    
+    ## Método delta
+    se = predicho * se_link,
+     
+    ## IC 95%
+    inf_limite = exp(inf_limite_link),
+    sup_limite = exp(sup_limite_link),
+    tipo = "OBSERVADO",
+    
+    ## variable indicadora de si el IC construido contiene el valor observado
+    cobertura_ic = ifelse(incidencias >= inf_limite & incidencias <= sup_limite, 1, 0),
+    
+    ## residuos
+    residuos = incidencias - predicho,
+    residuos_pearson = (incidencias - predicho)/sqrt(predicho),
+    residuos.est = residuos_pearson / se,
+    error_porcentual = ((predicho - incidencias) / incidencias) * 100
+    )
+head(datos_v2)
+```
+
+#### Errores m2
+
+```{r}
+## errores del modelo 
+datos_v2 %>%
+  ungroup() %>% 
+  mutate(truth = incidencias,
+         estimate = predicho) %>%
+  metrics(truth = truth,             
+          estimate = estimate)
+
+( mape2 <- mean(abs((datos_v2$incidencias - datos_v2$predicho) / datos_v2$incidencias), na.rm = T) * 100 )
+## mape de 48%
+
+( cobertura_2 <- mean(datos_v2$cobertura_ic, na.rm = T) *100 )
+```
+
+#### cálculo prediccion anual SS
+
+```{r}
+## total casos predichos ss m2
+casos_predichos_ss_m2 <- datos_v2 %>% 
+  ungroup() %>% 
+  group_by(Servicio_salud, AÑO) %>% 
+  summarise(total_casos = round(sum(predicho))) %>% 
+  left_join(df_zonas, by = "Servicio_salud")
+casos_predichos_ss_m2
+
+## total casos observados
+prop_año_ss_m2 <- datos.m2 %>% 
+  group_by(Servicio_salud, AÑO) %>% 
+  summarise(casos = sum(incidencias)) %>% 
+  left_join(casos_predichos_ss_m2, by = c("Servicio_salud", "AÑO"))
+prop_año_ss_m2
+
+## MAPE a nivel de SS
+(mape2_2 <- mean(abs((prop_año_ss_m2$casos - prop_año_ss_m2$total_casos) / prop_año_ss_m2$casos), na.rm = T) * 100)
+
+## sMAPE a nivel de SS
+( smape2_2 <- mean(2 * abs(prop_año_ss_m2$casos - prop_año_ss_m2$total_casos) / 
+                   (abs(prop_año_ss_m2$casos) + abs(prop_año_ss_m2$total_casos)), 
+                   na.rm = T) * 100 )
+```
+
+```{r}
+## observados vs predichos por año agregados
+datos_v2 %>% 
+  group_by(AÑO_m) %>% 
+  summarise(Observed = sum(incidencias), Predicted = sum(predicho)) %>% 
+  ggplot(aes(x = AÑO_m)) +
+  geom_line(aes(y = Observed), color = "black", size = 1) +
+  geom_line(aes(y = Predicted), color = "red", linetype = "dashed", size = 1) +
+  theme_minimal() +
+  labs(title = "Ajuste Temporal: Observado (Negro) vs Modelo Lineal (Rojo)",
+       y = "Total Incidencias", x = "Año")
+```
+
+```{r}
+plot_ss_2 <- ggplot(prop_año_ss_m2, aes(x = as.numeric(as.character(AÑO)))) +
+  geom_line(aes(y = casos, color = "Observado"), size = 1) +
+  geom_point(aes(y = casos, color = "Observado"), size = 1.5) +
+  
+  # Línea del Modelo (Rojo discontinuo)
+  geom_line(aes(y = total_casos, color = "Predicho"), linetype = "dashed", size = 1) +
+  
+  # Separar por Servicio
+  facet_wrap(~Servicio_salud, scales = "free_y") + 
+  
+  theme_minimal() +
+  labs(
+    title = "Validación Modelo M2: Tendencia por Servicio de Salud",
+    subtitle = "Comparación de Casos Totales Anuales",
+    x = "Año",
+    y = "Total de Casos",
+    color = "Incidencia",
+    caption = "Conjunto de datos: coincidencia incidencia y mortalidad.\nM2: con covariable AÑO"
+  ) +
+  theme(legend.position = "top")
+plot_ss_2
+```
+
+### m3 cov AÑO + SS
+
+#### Bondad de ajuste m3
+
+```{r}
+m3 <- glmmTMB::glmmTMB(
+  formula = incidencias ~ offset(log(defunciones)) + SEXO + QUINQUENIO + AÑO_m + ## variables modelo
+                  (1 + AÑO_m | Servicio_salud),                                    ## intercepto aleatorio + pendiente aleatoria
+    data = datos.m2,                                                       ## datos
+    family = poisson(link = "log"),
+  
+  na.action = na.omit)
+
+summary(m3)
+```
+
+```{r}
+datos_v3 <- datos.m2 
+
+## Estimación media condicional. considera los efectos aleatorios y el BULP
+verif_3 <- predict(m3, 
+                   newdata = datos_v3, 
+                   type = "link",                  ## escala logartimica
+                   se.fit = TRUE,                  ## obtener error estandar
+                   allow.new.levels = T)
+
+##############################################################
+
+datos_v3 <- datos_v3 %>% 
+  mutate(
+    
+    ## añadir estimaciones + error estandar
+    predicho_link = !!verif_3$fit,
+    se_link = !!verif_3$se.fit,
+    
+    ## calculo de limites de IC 95%
+    inf_limite_link = predicho_link - 1.96 * se_link,
+    sup_limite_link = predicho_link + 1.96 * se_link,
+    
+    ## llevar a escala de respuesta
+    predicho = exp(predicho_link),
+    
+    ## Método delta
+    se = predicho * se_link,
+     
+    ## IC 95%
+    inf_limite = exp(inf_limite_link),
+    sup_limite = exp(sup_limite_link),
+    tipo = "OBSERVADO",
+    
+    ## variable indicadora de si el IC construido contiene el valor observado
+    cobertura_ic = ifelse(incidencias >= inf_limite & incidencias <= sup_limite, 1, 0),
+    
+    ## residuos
+    residuos = incidencias - predicho,
+    residuos_pearson = (incidencias - predicho)/sqrt(predicho),
+    residuos.est = residuos_pearson / se,
+    error_porcentual = ((predicho - incidencias) / incidencias) * 100
+    )
+head(datos_v3)
+```
+
+#### Errores m3
+
+```{r}
+## errores del modelo 
+datos_v3 %>%
+  ungroup() %>% 
+  mutate(truth = incidencias,
+         estimate = predicho) %>%
+  metrics(truth = truth,             
+          estimate = estimate)
+
+( mape3 <- mean(abs((datos_v3$incidencias - datos_v3$predicho) / datos_v3$incidencias), na.rm = T) * 100 )
+## mape de 47%
+
+( cobertura_3 <- mean(datos_v3$cobertura_ic, na.rm = T) *100 )
+```
+
+#### cálculo prediccion anual SS
+
+```{r}
+## total casos predichos ss m3
+casos_predichos_ss_m3 <- datos_v3 %>% 
+  ungroup() %>% 
+  group_by(Servicio_salud, AÑO) %>% 
+  summarise(total_casos = round(sum(predicho))) %>% 
+  left_join(df_zonas, by = "Servicio_salud")
+casos_predichos_ss_m3
+
+## total casos observados
+prop_año_ss_m3 <- datos.m2 %>% 
+  group_by(Servicio_salud, AÑO) %>% 
+  summarise(casos = sum(incidencias)) %>% 
+  left_join(casos_predichos_ss_m3, by = c("Servicio_salud", "AÑO"))
+prop_año_ss_m3
+
+## MAPE a nivel de SS
+(mape2_3 <- mean(abs((prop_año_ss_m3$casos - prop_año_ss_m3$total_casos) / prop_año_ss_m3$casos), na.rm = T) * 100)
+
+## sMAPE a nivel de SS
+( smape2_3 <- mean(2 * abs(prop_año_ss_m3$casos - prop_año_ss_m3$total_casos) / 
+                   (abs(prop_año_ss_m3$casos) + abs(prop_año_ss_m3$total_casos)), 
+                   na.rm = T) * 100 )
+```
+
+```{r}
+plot_ss_3 <- ggplot(prop_año_ss_m3, aes(x = as.numeric(as.character(AÑO)))) +
+  ## linea observado
+  geom_line(aes(y = casos, color = "Observado"), size = 1) +
+  geom_point(aes(y = casos, color = "Observado"), size = 1.5) +
+  
+  ## linea predicho
+  geom_line(aes(y = total_casos, color = "Predicho"), linetype = "dashed", size = 1) +
+  
+  # Separar por Servicio
+  facet_wrap(~Servicio_salud, scales = "free_y") + 
+  
+  theme_minimal() +
+  labs(
+    title = "Validación Modelo M3: Tendencia por Servicio de Salud",
+    subtitle = "Comparación de Casos Totales Anuales",
+    x = "Año",
+    y = "Total de Casos",
+    color = "Incidencia",
+    caption = "Conjunto de datos: coincidencia incidencia y mortalidad.\nM3: con pendiente aleatoria por AÑO"
+  ) +
+  theme(legend.position = "top")
+plot_ss_3
+```
+
+## Estimación a partir de m1
+
+```{r eval = F}
+## 1. Dataset con anti_join, para que entre mortalidad e incidencias solo dejar filas del df de mortalidad que no se usaron en el ajuste del modelo.
+
+data_pred_1 <- anti_join(defunciones,
+                          incidencias,    
+                          by = c("Servicio_salud",
+                               "SEXO",
+                               "AÑO",
+                               "QUINQUENIO")) %>% 
+ ## formato factor
+  mutate(
+    SEXO = factor(SEXO),
+    QUINQUENIO = factor(QUINQUENIO),
+    Servicio_salud = factor(Servicio_salud) ) %>% 
+  
+  ## quitar quinquenios no empleados
+  filter(!(QUINQUENIO %in% c("10-14", "0-4", "5-9", "15-19"))) %>% 
+
+  ## quitar niveles que no se usarán
+  droplevels() %>% 
+  
+  ## info de casos colapsada por SS, SEXO y QQ
+  group_by(Servicio_salud, SEXO, QUINQUENIO) %>% 
+  summarise(
+            defunciones = sum(defunciones, na.rm = T)) %>% 
+  
+  ## quitar niveles que no se usarán
+  droplevels() %>% 
+  
+  filter(defunciones != 0)
+
+## 2. estimación de incidencias con mortalidad
+predicciones_1 <- predict(m1,                       ## modelo
+                        newdata = data_pred_1,      ## df con nuevos datos (las predicciones)
+                        type = "link",              ## la variables respuesta
+                        allow.new.levels = T,       ## esto permite predecir para servicios no vistos
+                        se.fit = T)     
+
+data_pred_1 <- data_pred_1 %>% 
+  mutate(
+    
+    ## añadir estimaciones + error estandar
+    predicho_link = !!predicciones_1$fit,
+    se_link = !!predicciones_1$se.fit,
+    
+    ## calculo de limites de IC 95%
+    inf_limite_link = predicho_link - 1.96 * se_link,
+    sup_limite_link = predicho_link + 1.96 * se_link,
+    
+    ## llevar a escala de respuesta
+    predicho = exp(predicho_link),
+    incidencias = round(predicho),
+    tipo = "ESTIMADO",
+    
+    ## Método delta
+    se = predicho * se_link,
+     
+    ## IC 95%
+    inf_limite = exp(inf_limite_link),
+    sup_limite = exp(sup_limite_link)
+    )
+```
+
+### gráfico incidencia ss y año
+
+```{r eval = F, fig.width= 9}
+## unido de DF de incidencias observadas y estimadas + prop de casos
+
+load("~/Desktop/U_CHILE/MG_BIOESTADÍSTICA/TESIS/DATOS PÚBLICOS/REGISTRO POBALCIONAL DE CÁNCER/prop_casos_año.RData")
+
+casos_total_QQ <- prop_año %>% 
+  mutate(casos_total_estimado = 52227,
+         casos_año = casos_total*prop_año)  
+  
+## grafico de casos por año.
+
+ggplot(data = casos_total_QQ,
+       mapping = aes(x = factor(Año_diag), y = casos_año)) + 
+  geom_line(aes(group = 1)) + 
+  geom_point() +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)  
+  )+
+  labs(
+    x = "Año",
+    y = "Casos nuevos de CG",
+    title = "Estimación de casos por año" )
+```
+
+### gráfico incidencias 2
+
+```{r eval = F, fig.width= 20, fig.height=25}
+datos_completo_1 <- datos_v1 %>% 
+  select(-c(15:19)) %>% 
+  rbind(data_pred_1) %>% 
+  ungroup()  %>% 
+  group_by(Servicio_salud) %>% 
+  summarise(incidencias_ss = sum(incidencias))
+   
+df_casos_wide <- pivot_wider(datos_completo_1,
+                                    names_from = Servicio_salud,
+                                    values_from = incidencias_ss)
+
+df_final <- prop_año %>%
+  crossing(df_casos_wide) %>% 
+  
+   mutate(across(
+    -c(Año_diag, casos,casos_total ,prop_año),              # aplica a todas las columnas menos año y proporción
+    ~ round(.x * prop_año),                # multiplica cada columna por la proporción
+    .names = "{.col}_casos"           # crea nuevas columnas con sufijo "_casos"
+  )) %>% 
+  select(-casos) %>% 
+  pivot_longer(
+    cols = ends_with("_casos"),             # selecciona solo las columnas que terminan en "_casos"
+    names_to = "Servicio_salud",            # nombre de la nueva columna que tendrá los nombres originales
+    values_to = "casos"                     # nombre de la columna con los valores
+  ) %>%
+  mutate(
+    Servicio_salud = sub("_casos$", "", Servicio_salud)  # limpia el nombre, quitando el sufijo "_casos"
+  ) %>% 
+  select(Año_diag, Servicio_salud, casos)
+
+ggplot(data = df_final,
+       mapping = aes(
+         x = factor(Año_diag),
+         y = casos)) +
+  geom_line(aes(group = 1)) +       # opcional: une los puntos por año
+  geom_point() +                    # muestra los puntos
+  facet_wrap(~Servicio_salud, ncol = 2, scales = "free_y") +  # 4 columnas de facetas
+  theme_minimal() +
+  labs(
+    x = "Año",
+    y = "Casos estimados",
+    title = "Evolución de casos de cáncer gástrico por Servicio de Salud"
+  )
+```
+
+# modelo con replace NA por 1
+
+### m4 sin cov AÑO
+
+```{r}
+## datos 
+datos.m4 <- left_join(incidencias,
+                          defunciones,    
+                          by = c("Servicio_salud",
+                               "SEXO",
+                               "AÑO",
+                               "QUINQUENIO")) %>% 
+  mutate(
+    SEXO = factor(SEXO),
+    QUINQUENIO = factor(QUINQUENIO),
+    Servicio_salud = factor(Servicio_salud) ) %>% 
+
+  filter(!(QUINQUENIO %in% c("10-14", "0-4", "5-10", "15-19"))) %>% 
+
+  group_by(Servicio_salud, SEXO, QUINQUENIO) %>% 
+  summarise(incidencias = sum(incidencias, na.rm = T),
+            defunciones = sum(defunciones, na.rm = T)) %>% 
+  
+  droplevels() %>% 
+  
+  mutate(defunciones = ifelse(defunciones == 0,1, defunciones)) 
+
+
+m4 <- glmmTMB::glmmTMB(
+  formula = incidencias ~ offset(log(defunciones)) + SEXO + QUINQUENIO +  ## variables modelo
+                  (1 | Servicio_salud),                                    ## intercapto aleatorio
+    data = datos.m4,                                                       ## datos
+    family = poisson(link = "log"),
+  
+  ## no usar filas con NA
+  na.action = na.omit)
+
+summary(m4) 
+
+performance::check_model(m4)
+DHARMa::simulateResiduals(m4, plot = T)
+
+res4 <- DHARMa::simulateResiduals(m4) 
+
+## diag:
+DHARMa::testUniformity(res4)                                     ## KS / uniformidad no se rechza H0
+DHARMa::testDispersion(res4)                                     ## hay sub-dispersion
+```
+
+#### Bondad de ajuste m4
+
+```{r}
+datos_v4 <- datos.m4 
+
+## Estimación media condicional. considera los efectos aleatorios y el BULP
+verif_4 <- predict(m4, 
+                   newdata = datos_v4, 
+                   type = "link",                  ## escala logartimica
+                   se.fit = TRUE,                  ## obtener error estandar
+                   allow.new.levels = T)
+
+##############################################################
+
+datos_v4 <- datos_v4 %>% 
+  mutate(
+    
+    ## añadir estimaciones + error estandar
+    predicho_link = !!verif_4$fit,
+    se_link = !!verif_4$se.fit,
+    
+    ## calculo de limites de IC 95%
+    inf_limite_link = predicho_link - 1.96 * se_link,
+    sup_limite_link = predicho_link + 1.96 * se_link,
+    
+    ## llevar a escala de respuesta
+    predicho = exp(predicho_link),
+    
+    ## Método delta
+    se = predicho * se_link,
+     
+    ## IC 95%
+    inf_limite = exp(inf_limite_link),
+    sup_limite = exp(sup_limite_link),
+    tipo = "OBSERVADO",
+    
+    ## variable indicadora de si el IC construido contiene el valor observado
+    cobertura_ic = ifelse(incidencias >= inf_limite & incidencias <= sup_limite, 1, 0),
+    
+    ## residuos
+    residuos = incidencias - predicho,
+    residuos_pearson = (incidencias - predicho)/sqrt(predicho),
+    residuos.est = residuos_pearson / se,
+    error_porcentual = ((predicho - incidencias) / incidencias) * 100
+    )
+head(datos_v4)
+```
+
+#### Errores m4
+
+```{r}
+## errores del modelo 
+datos_v4 %>%
+  ungroup() %>% 
+  mutate(truth = incidencias,
+         estimate = predicho) %>%
+  metrics(truth = truth,             ## métricas del modelo
+          estimate = estimate)
+
+( mape4 <- mean(abs((datos_v4$incidencias - datos_v4$predicho) / datos_v4$incidencias), na.rm = T) * 100 )
+
+( cobertura_4 <- mean(datos_v4$cobertura_ic, na.rm = T) *100 ) ## cobertura 53%
+```
+
+#### cálculo prediccion anual país
+
+```{r}
+## total casos predichos m1
+casos_predichos <- datos_v4 %>% 
+  ungroup() %>% 
+  summarise(total_casos = round(sum(predicho)))
+casos_predichos
+
+## proporción de casos-año a partir de RPC
+prop_año_m4 <- prop_año %>% 
+  mutate(total_casos = casos_predichos$total_casos,
+         casos_año = round(total_casos * prop_año)) %>% 
+  rename(AÑO = Año_diag)
+prop_año_m4
+
+## casos observados RPC
+casos_año_4 <- incidencias %>% 
+  group_by(AÑO) %>% 
+  summarise(casos_obs = sum(incidencias)) %>% 
+  left_join(prop_año_m4, by = "AÑO")
+
+## muy poco MAPE a nivel de AÑO
+( mape4_1 <- mean(abs((casos_año_4$casos_obs - casos_año_4$casos_año) / casos_año_4$casos_obs), na.rm = T) * 100 )
+( smape4_1 <- mean(2 * abs(casos_año_4$casos_obs - casos_año_4$casos_año) / 
+                   (abs(casos_año_4$casos_obs) + abs(casos_año_4$casos_año)), 
+                   na.rm = T) * 100 )
+```
+
+#### cálculo predicción anual SS
+
+```{r}
+## total casos predichos ss m1
+casos_predichos_ss_m4 <- datos_v4 %>% 
+  ungroup() %>% 
+  group_by(Servicio_salud) %>% 
+  summarise(total_casos = round(sum(predicho))) %>% 
+  left_join(df_zonas, by = "Servicio_salud")
+casos_predichos_ss_m4
+
+prop_año_ss_m4 <- casos_zona_año %>% 
+  inner_join(casos_predichos_ss_m4, by = "ZONA") %>% 
+  mutate(total_casos = round(total_casos * prop_zona_año)) %>% 
+  rename(AÑO = Año_diag)
+prop_año_ss_m4
+
+## MAPE a nivel de SS
+(mape2_4 <- mean(abs((prop_año_ss_m4$casos - prop_año_ss_m4$total_casos) / prop_año_ss_m4$casos), na.rm = T) * 100 )
+
+## sMAPE a nivel de SS
+( smape2_4 <- mean(2 * abs(prop_año_ss_m4$casos - prop_año_ss_m4$total_casos) / 
+                   (abs(prop_año_ss_m4$casos) + abs(prop_año_ss_m4$total_casos)), 
+                   na.rm = T) * 100 )
+```
+
+```{r}
+plot_ss_4 <- ggplot(prop_año_ss_m4, aes(x = as.numeric(as.character(AÑO)))) +
+  # Línea de Datos Reales (Negro)
+  geom_line(aes(y = casos, color = "Observado"), size = 1) +
+  geom_point(aes(y = casos, color = "Observado"), size = 1.5) +
+  
+  # Línea del Modelo (Rojo discontinuo)
+  geom_line(aes(y = total_casos, color = "Predicho"), linetype = "dashed", size = 1) +
+  
+  # Separar por Servicio
+  facet_wrap(~Servicio_salud, scales = "free_y") + 
+  
+  theme_minimal() +
+  labs(
+    title = "Validación Modelo M4: Tendencia por Servicio de Salud",
+    subtitle = "Comparación de Casos Totales Anuales",
+    x = "Año",
+    y = "Total de Casos",
+    color = "Incidencias",
+    caption = "Conjunto de datos: reemplazo de mortalidad 0 por 1.\nM4: sin covariable AÑO"
+  ) +
+  theme(legend.position = "top")
+plot_ss_4
+```
+
+### m5 cov AÑO
+
+```{r}
+datos.m5 <- left_join(incidencias,
+                          defunciones,    
+                          by = c("Servicio_salud",
+                               "SEXO",
+                               "AÑO",
+                               "QUINQUENIO")) %>% 
+  mutate(
+    SEXO = factor(SEXO),
+    QUINQUENIO = factor(QUINQUENIO),
+    Servicio_salud = factor(Servicio_salud) ) %>% 
+  
+  filter(!(QUINQUENIO %in% c("10-14", "0-4", "5-9", "15-19"))) %>% 
+
+  droplevels() %>% 
+  
+  mutate(defunciones = ifelse(is.na(defunciones), 1, defunciones)) %>% 
+  
+  mutate(AÑO_m = dplyr::recode(AÑO,
+                        "1998" = 1,
+                        "1999" = 2,
+                        "2000" = 3,
+                        "2001" = 4,
+                        "2002" = 5,
+                        "2003" = 6,
+                        "2004" = 7,
+                        "2005" = 8,
+                        "2006" = 9,
+                        "2007" = 10,
+                        "2008" = 11,
+                        "2009" = 12,
+                        "2010" = 13,
+                        "2011" = 14,
+                        "2012" = 15,
+                        "2013" = 16,
+                        "2014" = 17,
+                        "2015" = 18,
+                        "2016" = 19,
+                        "2017" = 20,
+                        "2018" = 21,
+                        "2019" = 22))
+
+########################################################
+
+m5 <- glmmTMB::glmmTMB(
+  formula = incidencias ~ offset(log(defunciones)) + SEXO + QUINQUENIO + AÑO_m +  ## variables modelo
+                  (1 | Servicio_salud),                                    ## intercapto aleatorio
+    data = datos.m5,                                                       ## datos
+    family = poisson(link = "log"),
+  
+  ## no usar filas con NA
+  na.action = na.omit)
+
+summary(m5)
+```
+
+#### bondad del ajuste m5
+
+```{r}
+datos_v5 <- datos.m5 
+
+## Estimación media condicional. considera los efectos aleatorios y el BULP
+verif_5 <- predict(m5, 
+                   newdata = datos_v5, 
+                   type = "link",                  ## escala logartimica
+                   se.fit = TRUE,                  ## obtener error estandar
+                   allow.new.levels = T)
+
+##############################################################
+
+datos_v5<- datos_v5 %>% 
+  mutate(
+    
+    ## añadir estimaciones + error estandar
+    predicho_link = !!verif_5$fit,
+    se_link = !!verif_5$se.fit,
+    
+    ## calculo de limites de IC 95%
+    inf_limite_link = predicho_link - 1.96 * se_link,
+    sup_limite_link = predicho_link + 1.96 * se_link,
+    
+    ## llevar a escala de respuesta
+    predicho = exp(predicho_link),
+    
+    ## Método delta
+    se = predicho * se_link,
+    
+    ## IC 95%
+    inf_limite = exp(inf_limite_link),
+    sup_limite = exp(sup_limite_link),
+    tipo = "OBSERVADO",
+    
+    ## variable indicadora de si el IC construido contiene el valor observado
+    cobertura_ic = ifelse(incidencias >= inf_limite & incidencias <= sup_limite, 1, 0),
+    
+    ## residuos
+    residuos = incidencias - predicho,
+    residuos_pearson = (incidencias - predicho)/sqrt(predicho),
+    residuos.est = residuos_pearson / se,
+    error_porcentual = ((predicho - incidencias) / incidencias) * 100 ) 
+
+head(datos_v5)
+```
+
+#### Errores m5
+
+```{r}
+## errores del modelo 
+datos_v5 %>%
+  ungroup() %>% 
+  mutate(truth = incidencias,
+         estimate = predicho) %>%
+  metrics(truth = truth,             ## métricas del modelo
+          estimate = estimate)
+
+( mape5 <- mean(abs((datos_v5$incidencias - datos_v5$predicho) / datos_v5$incidencias), na.rm = T) * 100 )
+
+( cobertura_5 <- mean(datos_v5$cobertura_ic, na.rm = T) *100 ) 
+```
+
+#### cálculo prediccion anual SS
+
+```{r}
+## total casos predichos ss m5
+casos_predichos_ss_m5 <- datos_v5 %>% 
+  ungroup() %>% 
+  group_by(Servicio_salud, AÑO) %>% 
+  summarise(total_casos = round(sum(predicho))) %>% 
+  left_join(df_zonas, by = "Servicio_salud")
+casos_predichos_ss_m5
+
+## total casos observados
+prop_año_ss_m5 <- datos.m5 %>% 
+  group_by(Servicio_salud, AÑO) %>% 
+  summarise(casos = sum(incidencias)) %>% 
+  left_join(casos_predichos_ss_m5, by = c("Servicio_salud", "AÑO"))
+prop_año_ss_m5
+
+## MAPE a nivel de SS
+(mape2_5 <- mean(abs((prop_año_ss_m5$casos - prop_año_ss_m5$total_casos) / prop_año_ss_m5$casos), na.rm = T) * 100)
+
+## sMAPE a nivel de SS
+( smape2_5 <- mean(2 * abs(prop_año_ss_m5$casos - prop_año_ss_m5$total_casos) / 
+                   (abs(prop_año_ss_m5$casos) + abs(prop_año_ss_m5$total_casos)), 
+                   na.rm = T) * 100 )
+```
+
+```{r}
+plot_ss_5 <- ggplot(prop_año_ss_m5, aes(x = as.numeric(as.character(AÑO)))) +
+  # Línea de Datos Reales (Negro)
+  geom_line(aes(y = casos, color = "Observado"), size = 1) +
+  geom_point(aes(y = casos, color = "Observado"), size = 1.5) +
+  
+  # Línea del Modelo (Rojo discontinuo)
+  geom_line(aes(y = total_casos, color = "Predicho"), linetype = "dashed", size = 1) +
+  
+  # Separar por Servicio
+  facet_wrap(~Servicio_salud, scales = "free_y") + 
+  
+  theme_minimal() +
+  labs(
+    title = "Validación Modelo M5: Tendencia por Servicio de Salud",
+    subtitle = "Comparación de Casos Totales Anuales",
+    x = "Año",
+    y = "Total de Casos",
+    color = "Incidencia",
+    caption = "Conjunto de datos: reemplazo de mortalidad 0 por 1.\nM5: con covariable AÑO"
+  ) +
+  theme(legend.position = "top")
+
+plot_ss_5
+```
+
+### m6 con cov AÑO + SS
+
+#### Bondad de ajuste m6
+
+```{r}
+m6 <- glmmTMB::glmmTMB(
+  formula = incidencias ~ offset(log(defunciones)) + SEXO + QUINQUENIO + AÑO_m +  ## variables modelo
+                  (1 + AÑO_m | Servicio_salud),                                    ## intercepto aleatorio y pendiente aleatoria
+    data = datos.m5,                                                       ## datos
+    family = poisson(link = "log"),
+  
+  na.action = na.omit)
+
+summary(m6)
+```
+
+```{r}
+datos_v6 <- datos.m5
+
+## Estimación media condicional. considera los efectos aleatorios y el BULP
+verif_6 <- predict(m6, 
+                   newdata = datos_v6, 
+                   type = "link",                  ## escala logartimica
+                   se.fit = TRUE,                  ## obtener error estandar
+                   allow.new.levels = T)
+
+##############################################################
+
+datos_v6 <- datos_v6 %>% 
+  mutate(
+    
+    ## añadir estimaciones + error estandar
+    predicho_link = !!verif_6$fit,
+    se_link = !!verif_6$se.fit,
+    
+    ## calculo de limites de IC 95%
+    inf_limite_link = predicho_link - 1.96 * se_link,
+    sup_limite_link = predicho_link + 1.96 * se_link,
+    
+    ## llevar a escala de respuesta
+    predicho = exp(predicho_link),
+    
+    ## Método delta
+    se = predicho * se_link,
+     
+    ## IC 95%
+    inf_limite = exp(inf_limite_link),
+    sup_limite = exp(sup_limite_link),
+    tipo = "OBSERVADO",
+    
+    ## variable indicadora de si el IC construido contiene el valor observado
+    cobertura_ic = ifelse(incidencias >= inf_limite & incidencias <= sup_limite, 1, 0),
+    
+    ## residuos
+    residuos = incidencias - predicho,
+    residuos_pearson = (incidencias - predicho)/sqrt(predicho),
+    residuos.est = residuos_pearson / se,
+    error_porcentual = ((predicho - incidencias) / incidencias) * 100
+    )
+head(datos_v6)
+```
+
+#### Errores m6
+
+```{r}
+## errores del modelo 
+datos_v6 %>%
+  ungroup() %>% 
+  mutate(truth = incidencias,
+         estimate = predicho) %>%
+  metrics(truth = truth,             
+          estimate = estimate)
+
+( mape6 <- mean(abs((datos_v6$incidencias - datos_v6$predicho) / datos_v6$incidencias), na.rm = T) * 100 )
+## mape de 48%
+
+( cobertura_6 <- mean(datos_v6$cobertura_ic, na.rm = T) *100 )
+```
+
+#### cálculo prediccion anual SS
+
+```{r}
+## total casos predichos ss m3
+casos_predichos_ss_m6 <- datos_v6 %>% 
+  ungroup() %>% 
+  group_by(Servicio_salud, AÑO) %>% 
+  summarise(total_casos = round(sum(predicho))) %>% 
+  left_join(df_zonas, by = "Servicio_salud")
+casos_predichos_ss_m6
+
+## total casos observados
+prop_año_ss_m6 <- datos.m5 %>% 
+  group_by(Servicio_salud, AÑO) %>% 
+  summarise(casos = sum(incidencias)) %>% 
+  left_join(casos_predichos_ss_m6, by = c("Servicio_salud", "AÑO"))
+prop_año_ss_m6
+
+## MAPE a nivel de SS
+(mape2_6 <- mean(abs((prop_año_ss_m6$casos - prop_año_ss_m6$total_casos) / prop_año_ss_m6$casos), na.rm = T) * 100)
+
+## sMAPE a nivel de SS
+( smape2_6 <- mean(2 * abs(prop_año_ss_m6$casos - prop_año_ss_m6$total_casos) / 
+                   (abs(prop_año_ss_m6$casos) + abs(prop_año_ss_m6$total_casos)), 
+                   na.rm = T) * 100 )
+```
+
+```{r}
+plot_ss_6 <- ggplot(prop_año_ss_m6, aes(x = as.numeric(as.character(AÑO)))) +
+  # Línea de Datos Reales (Negro)
+  geom_line(aes(y = casos, color = "Observado"), size = 1) +
+  geom_point(aes(y = casos, color = "Observado"), size = 1.5) +
+  
+  # Línea del Modelo (Rojo discontinuo)
+  geom_line(aes(y = total_casos, color = "Predicho"), linetype = "dashed", size = 1) +
+  
+  # Separar por Servicio
+  facet_wrap(~Servicio_salud, scales = "free_y") + 
+  
+  theme_minimal() +
+  labs(
+    title = "Validación Modelo M6: Tendencia por Servicio de Salud",
+    subtitle = "Comparación de Casos Totales Anuales",
+    x = "Año",
+    y = "Total de Casos",
+    color = "Incidencia",
+    caption = "Conjunto de datos: reemplazo de mortalidad 0 por 1.\nM6: con pendiente aleatoria por AÑO"
+  ) +
+  theme(legend.position = "top")
+plot_ss_6
+```
+
+# Modelo con cuartiles
+
+### m7 sin cov AÑO
+
+```{r}
+datos.m7 <- left_join(incidencias_cuartil, 
+                           defunciones_cuartil,  
+                           by = c("Servicio_salud",
+                               "SEXO",
+                               "AÑO",
+                               "EDAD_CUARTIL")) %>% 
+
+  mutate(
+    SEXO = factor(SEXO),
+    EDAD_CUARTIL = factor(EDAD_CUARTIL),
+    Servicio_salud = factor(Servicio_salud) ) %>% 
+  
+  group_by(Servicio_salud, SEXO, EDAD_CUARTIL) %>% 
+  
+  summarise(incidencias = sum(incidencias, na.rm = T),
+            defunciones = sum(defunciones, na.rm = T)) %>% 
+  droplevels()
+
+## categoria de referencia
+datos.m7$SEXO <- relevel(datos.m7$SEXO, ref = "Mujer")
+
+## modelo GLM Poisson
+m7 <- glmmTMB::glmmTMB(
+  formula = incidencias ~ offset(log(defunciones)) + SEXO + EDAD_CUARTIL +    ## variables modelo
+                   (1 | Servicio_salud),                                    ## intercepto aleatorio
+    data = datos.m7,                                                       ## datos
+    family = poisson(link = "log"),
+  na.action = na.omit)
+
+summary(m7)
+```
+
+#### Bondad de ajuste m7
+
+```{r}
+datos_v7 <- datos.m7
+
+## Estimación media condicional. considera los efectos aleatorios y el BULP
+verif_7 <- predict(m7, 
+                   newdata = datos_v7, 
+                   type = "link",                  ## escala logartimica
+                   se.fit = TRUE,                  ## obtener error estandar
+                   allow.new.levels = T)
+
+##############################################################
+
+datos_v7 <- datos_v7 %>% 
+  mutate(
+    
+    ## añadir estimaciones + error estandar
+    predicho_link = !!verif_7$fit,
+    se_link = !!verif_7$se.fit,
+    
+    ## calculo de limites de IC 95%
+    inf_limite_link = predicho_link - 1.96 * se_link,
+    sup_limite_link = predicho_link + 1.96 * se_link,
+    
+    ## llevar a escala de respuesta
+    predicho = exp(predicho_link),
+    
+    ## Método delta
+    se = predicho * se_link,
+    
+    ## IC 95%
+    inf_limite = exp(inf_limite_link),
+    sup_limite = exp(sup_limite_link),
+    tipo = "OBSERVADO",
+    
+    ## variable indicadora de si el IC construido contiene el valor observado
+    cobertura_ic = ifelse(incidencias >= inf_limite & incidencias <= sup_limite, 1, 0),
+    
+    ## residuos
+    residuos = incidencias - predicho,
+    residuos_pearson = (incidencias - predicho)/sqrt(predicho),
+    residuos.est = residuos_pearson / se,
+    error_porcentual = ((predicho - incidencias) / incidencias) * 100 ) 
+
+head(datos_v7)
+```
+
+#### Errores m7
+
+```{r}
+datos_v7 %>%
+  ungroup() %>% 
+  mutate(truth = incidencias,
+         estimate = predicho) %>%
+  metrics(truth = truth,             ## métricas del modelo
+          estimate = estimate)
+
+( mape7 <- mean(abs((datos_v7$incidencias - datos_v7$predicho) / datos_v7$incidencias), na.rm = T) * 100 ) 
+
+( cobertura_7 <- mean(datos_v7$cobertura_ic, na.rm = T) *100 ) 
+```
+
+#### cálculo prediccion anual país
+
+```{r}
+## total casos predichos m1
+casos_predichos <- datos_v7 %>% 
+  ungroup() %>% 
+  summarise(total_casos = round(sum(predicho)))
+casos_predichos
+
+## proporción de casos-año a partir de RPC
+prop_año_m7 <- prop_año %>% 
+  mutate(total_casos = casos_predichos$total_casos,
+         casos_año = round(total_casos * prop_año)) %>% 
+  rename(AÑO = Año_diag)
+prop_año_m7
+
+## casos observados RPC
+casos_año_7 <- incidencias_cuartil %>% 
+  group_by(AÑO) %>% 
+  summarise(casos_obs = sum(incidencias)) %>% 
+  left_join(prop_año_m7, by = "AÑO")
+
+## muy poco MAPE a nivel de AÑO
+(mape7_1 <- mean(abs((casos_año_7$casos_obs - casos_año_7$casos_año) / casos_año_7$casos_obs), na.rm = T) * 100 )
+```
+
+#### cálculo prediccion anual SS
+
+```{r}
+## total casos predichos ss m1
+casos_predichos_ss_m7 <- datos_v7 %>% 
+  ungroup() %>% 
+  group_by(Servicio_salud) %>% 
+  summarise(total_casos = round(sum(predicho))) %>% 
+  left_join(df_zonas, by = "Servicio_salud")
+casos_predichos_ss_m7
+
+prop_año_ss_m7 <- casos_zona_año %>% 
+  inner_join(casos_predichos_ss_m7, by = "ZONA") %>% 
+  mutate(total_casos = round(total_casos * prop_zona_año)) %>% 
+  rename(AÑO = Año_diag)
+prop_año_ss_m7
+
+## MAPE a nivel de SS
+(mape2_7 <- mean(abs((prop_año_ss_m7$casos - prop_año_ss_m7$total_casos) / prop_año_ss_m7$casos), na.rm = T) * 100 )
+
+## sMAPE a nivel de SS
+( smape2_7 <- mean(2 * abs(prop_año_ss_m7$casos - prop_año_ss_m7$total_casos) / 
+                   (abs(prop_año_ss_m7$casos) + abs(prop_año_ss_m7$total_casos)), 
+                   na.rm = T) * 100 )
+```
+
+```{r}
+plot_ss_7 <- ggplot(prop_año_ss_m7, aes(x = as.numeric(as.character(AÑO)))) +
+  # Línea de Datos Reales (Negro)
+  geom_line(aes(y = casos, color = "Observado"), size = 1) +
+  geom_point(aes(y = casos, color = "Observado"), size = 1.5) +
+  
+  # Línea del Modelo (Rojo discontinuo)
+  geom_line(aes(y = total_casos, color = "Predicho"), linetype = "dashed", size = 1) +
+  
+  # Separar por Servicio
+  facet_wrap(~Servicio_salud, scales = "free_y") + 
+  
+  theme_minimal() +
+  labs(
+    title = "Validación Modelo M7: Tendencia por Servicio de Salud",
+    subtitle = "Comparación de Casos Totales Anuales",
+    x = "Año",
+    y = "Total de Casos",
+    color = "Incidencia",
+    caption = "Conjunto de datos: agrupación por cuartiles.\nM7: sin covariable AÑO"
+  ) +
+  theme(legend.position = "top")
+plot_ss_7
+```
+
+### m8 cov AÑO
+
+```{r}
+datos.m8 <- left_join(incidencias_cuartil, 
+                           defunciones_cuartil,  
+                           by = c("Servicio_salud",
+                               "SEXO",
+                               "AÑO",
+                               "EDAD_CUARTIL")) %>% 
+  mutate(
+    SEXO = factor(SEXO),
+    EDAD_CUARTIL = factor(EDAD_CUARTIL),
+    Servicio_salud = factor(Servicio_salud) ) %>% 
+  
+  droplevels() %>% 
+  mutate(defunciones = ifelse(is.na(defunciones), 1, defunciones)) %>% 
+
+  mutate(AÑO_m = dplyr::recode(AÑO,
+                        "1998" = 1,
+                        "1999" = 2,
+                        "2000" = 3,
+                        "2001" = 4,
+                        "2002" = 5,
+                        "2003" = 6,
+                        "2004" = 7,
+                        "2005" = 8,
+                        "2006" = 9,
+                        "2007" = 10,
+                        "2008" = 11,
+                        "2009" = 12,
+                        "2010" = 13,
+                        "2011" = 14,
+                        "2012" = 15,
+                        "2013" = 16,
+                        "2014" = 17,
+                        "2015" = 18,
+                        "2016" = 19,
+                        "2017" = 20,
+                        "2018" = 21,
+                        "2019" = 22))
+
+## categoria de referencia
+datos.m8$SEXO <- relevel(datos.m8$SEXO, ref = "Mujer")
+
+## modelo GLM Poisson
+m8 <- glmmTMB::glmmTMB(
+  formula = incidencias ~ offset(log(defunciones)) + SEXO + EDAD_CUARTIL + AÑO_m +  ## variables modelo
+                   (1 | Servicio_salud),                                    ## intercepto aleatorio
+    data = datos.m8,                                                       ## datos
+    family = poisson(link = "log"),
+  na.action = na.omit)
+
+summary(m8)
+```
+
+#### Bondad de ajuste m8
+
+```{r}
+datos_v8 <- datos.m8 
+
+## Estimación media condicional. considera los efectos aleatorios y el BULP
+verif_8 <- predict(m8, 
+                   newdata = datos_v8, 
+                   type = "link",                  ## escala logartimica
+                   se.fit = TRUE,                  ## obtener error estandar
+                   allow.new.levels = T)
+
+##############################################################
+
+datos_v8 <- datos_v8 %>% 
+  mutate(
+    
+    ## añadir estimaciones + error estandar
+    predicho_link = !!verif_8$fit,
+    se_link = !!verif_8$se.fit,
+    
+    ## calculo de limites de IC 95%
+    inf_limite_link = predicho_link - 1.96 * se_link,
+    sup_limite_link = predicho_link + 1.96 * se_link,
+    
+    ## llevar a escala de respuesta
+    predicho = exp(predicho_link),
+    
+    ## Método delta
+    se = predicho * se_link,
+    
+    ## IC 95%
+    inf_limite = exp(inf_limite_link),
+    sup_limite = exp(sup_limite_link),
+    tipo = "OBSERVADO",
+    
+    ## variable indicadora de si el IC construido contiene el valor observado
+    cobertura_ic = ifelse(incidencias >= inf_limite & incidencias <= sup_limite, 1, 0),
+    
+    ## residuos
+    residuos = incidencias - predicho,
+    residuos_pearson = (incidencias - predicho)/sqrt(predicho),
+    residuos.est = residuos_pearson / se,
+    error_porcentual = ((predicho - incidencias) / incidencias) * 100 ) 
+
+head(datos_v8)
+```
+
+#### Errores m8
+
+```{r}
+## errores del modelo 
+datos_v8 %>%
+  ungroup() %>% 
+  mutate(truth = incidencias,
+         estimate = predicho) %>%
+  metrics(truth = truth,             ## métricas del modelo
+          estimate = estimate)
+
+( mape8 <- mean(abs((datos_v8$incidencias - datos_v8$predicho) / datos_v8$incidencias), na.rm = T) * 100 )
+
+( cobertura_8 <- mean(datos_v8$cobertura_ic, na.rm = T) *100 ) 
+```
+
+#### cálculo predicción anual SS
+
+```{r}
+## total casos predichos ss m2
+casos_predichos_ss_m8 <- datos_v8 %>% 
+  ungroup() %>% 
+  group_by(Servicio_salud, AÑO) %>% 
+  summarise(total_casos = round(sum(predicho))) %>% 
+  left_join(df_zonas, by = "Servicio_salud")
+casos_predichos_ss_m8
+
+## total casos observados
+prop_año_ss_m8 <- datos.m8 %>% 
+  group_by(Servicio_salud, AÑO) %>% 
+  summarise(casos = sum(incidencias)) %>% 
+  left_join(casos_predichos_ss_m8, by = c("Servicio_salud", "AÑO"))
+prop_año_ss_m8
+
+## MAPE a nivel de SS
+(mape2_8 <- mean(abs((prop_año_ss_m8$casos - prop_año_ss_m8$total_casos) / prop_año_ss_m8$casos), na.rm = T) * 100)
+
+## sMAPE a nivel de SS
+( smape2_8 <- mean(2 * abs(prop_año_ss_m8$casos - prop_año_ss_m8$total_casos) / 
+                   (abs(prop_año_ss_m8$casos) + abs(prop_año_ss_m8$total_casos)), 
+                   na.rm = T) * 100 )
+```
+
+```{r}
+plot_ss_8 <- ggplot(prop_año_ss_m8, aes(x = as.numeric(as.character(AÑO)))) +
+  # Línea de Datos Reales (Negro)
+  geom_line(aes(y = casos, color = "Observado"), size = 1) +
+  geom_point(aes(y = casos, color = "Observado"), size = 1.5) +
+  
+  # Línea del Modelo (Rojo discontinuo)
+  geom_line(aes(y = total_casos, color = "Predicho"), linetype = "dashed", size = 1) +
+  
+  # Separar por Servicio
+  facet_wrap(~Servicio_salud, scales = "free_y") + 
+  
+  theme_minimal() +
+  labs(
+    title = "Validación Modelo M8: Tendencia por Servicio de Salud",
+    subtitle = "Comparación de Casos Totales Anuales",
+    x = "Año",
+    y = "Total de Casos",
+    color = "Incidencia",
+    caption = "Conjunto de datos: agrupación por cuartiles.\nM8: con covariable AÑO"
+  ) +
+  theme(legend.position = "top")
+plot_ss_8
+```
+
+### m9 con AÑO + SS
+
+#### Bondad de ajuste m9
+
+```{r}
+m9 <- glmmTMB::glmmTMB(
+  formula = incidencias ~ offset(log(defunciones)) + SEXO + EDAD_CUARTIL + AÑO_m +  ## variables modelo
+                  (1 + AÑO_m | Servicio_salud),                                    ## intercapto aleatorio + pendiente aleatoria
+    data = datos.m8,                                                       ## datos
+    family = poisson(link = "log"),
+  
+  na.action = na.omit)
+
+summary(m9)
+```
+
+```{r}
+datos_v9 <- datos.m8
+
+## Estimación media condicional. considera los efectos aleatorios y el BULP
+verif_9 <- predict(m9, 
+                   newdata = datos_v9, 
+                   type = "link",                  ## escala logartimica
+                   se.fit = TRUE,                  ## obtener error estandar
+                   allow.new.levels = T)
+
+##############################################################
+
+datos_v9 <- datos_v9 %>% 
+  mutate(
+    
+    ## añadir estimaciones + error estandar
+    predicho_link = !!verif_9$fit,
+    se_link = !!verif_9$se.fit,
+    
+    ## calculo de limites de IC 95%
+    inf_limite_link = predicho_link - 1.96 * se_link,
+    sup_limite_link = predicho_link + 1.96 * se_link,
+    
+    ## llevar a escala de respuesta
+    predicho = exp(predicho_link),
+    
+    ## Método delta
+    se = predicho * se_link,
+     
+    ## IC 95%
+    inf_limite = exp(inf_limite_link),
+    sup_limite = exp(sup_limite_link),
+    tipo = "OBSERVADO",
+    
+    ## variable indicadora de si el IC construido contiene el valor observado
+    cobertura_ic = ifelse(incidencias >= inf_limite & incidencias <= sup_limite, 1, 0),
+    
+    ## residuos
+    residuos = incidencias - predicho,
+    residuos_pearson = (incidencias - predicho)/sqrt(predicho),
+    residuos.est = residuos_pearson / se,
+    error_porcentual = ((predicho - incidencias) / incidencias) * 100
+    )
+head(datos_v9)
+```
+
+#### Errores m9
+
+```{r}
+## errores del modelo 
+datos_v9 %>%
+  ungroup() %>% 
+  mutate(truth = incidencias,
+         estimate = predicho) %>%
+  metrics(truth = truth,             
+          estimate = estimate)
+
+( mape9 <- mean(abs((datos_v9$incidencias - datos_v9$predicho) / datos_v9$incidencias), na.rm = T) * 100 )
+## mape de 48%
+
+( cobertura_9 <- mean(datos_v9$cobertura_ic, na.rm = T) *100 )
+```
+
+#### cálculo prediccion anual SS
+
+```{r}
+## total casos predichos ss m3
+casos_predichos_ss_m9 <- datos_v9 %>% 
+  ungroup() %>% 
+  group_by(Servicio_salud, AÑO) %>% 
+  summarise(total_casos = round(sum(predicho))) %>% 
+  left_join(df_zonas, by = "Servicio_salud")
+casos_predichos_ss_m9
+
+## total casos observados
+prop_año_ss_m9 <- datos.m8 %>% 
+  group_by(Servicio_salud, AÑO) %>% 
+  summarise(casos = sum(incidencias)) %>% 
+  left_join(casos_predichos_ss_m9, by = c("Servicio_salud", "AÑO"))
+prop_año_ss_m9
+
+## MAPE a nivel de SS
+(mape2_9 <- mean(abs((prop_año_ss_m9$casos - prop_año_ss_m9$total_casos) / prop_año_ss_m9$casos), na.rm = T) * 100)
+
+## sMAPE a nivel de SS
+( smape2_9 <- mean(2 * abs(prop_año_ss_m9$casos - prop_año_ss_m9$total_casos) / 
+                   (abs(prop_año_ss_m9$casos) + abs(prop_año_ss_m9$total_casos)), 
+                   na.rm = T) * 100 )
+```
+
+```{r}
+plot_ss_9 <- ggplot(prop_año_ss_m9, aes(x = as.numeric(as.character(AÑO)))) +
+  # Línea de Datos Reales (Negro)
+  geom_line(aes(y = casos, color = "Observado"), size = 1) +
+  geom_point(aes(y = casos, color = "Observado"), size = 1.5) +
+  
+  # Línea del Modelo (Rojo discontinuo)
+  geom_line(aes(y = total_casos, color = "Predicho"), linetype = "dashed", size = 1) +
+  
+  # Separar por Servicio
+  facet_wrap(~Servicio_salud, scales = "free_y") + 
+  
+  theme_minimal() +
+  labs(
+    title = "Validación Modelo M9: Tendencia por Servicio de Salud",
+    subtitle = "Comparación de Casos Totales Anuales",
+    x = "Año",
+    y = "Total de Casos",
+    color = "Incidencia",
+    caption = "Conjunto de datos: agrupación por cuartiles.\nM9: con pendiente aleatoria por AÑO"
+  ) +
+  theme(legend.position = "top")
+plot_ss_9
+```
+
+# COMPARACION RENDIMIENTO MODELOS 1
+
+```{r}
+resumen_modelos <- data.frame(
+  MODELO = c("sin año","cov año", "pendiente aleatoria", "sin año","cov año", "pendiente aleatoria","sin año","cov año", "pendiente aleatoria"),
+  DATOS = c("match","match","match","replace NA","replace NA","replace NA", "cuartil","cuartil","cuartil"),
+mape = c(mape1, mape4, mape7, mape2,  mape5, mape8, mape3,  mape6, mape9),
+IC = c(cobertura_1, cobertura_4, cobertura_7, cobertura_2,  cobertura_5, cobertura_8, cobertura_3,  cobertura_6,   cobertura_9)
+  )
+
+View(resumen_modelos)
+```
+
+# COMPARACION RENDIMIENTO MODELOS 2, segun predición
+
+```{r}
+resumen_modelos_2 <- data.frame(
+  MODELO = c("sin año","cov año", "pendiente aleatoria", "sin año","cov año", "pendiente aleatoria","sin año","cov año", "pendiente aleatoria"),
+  DATOS = c("match","match","match","replace NA","replace NA","replace NA", "cuartil","cuartil","cuartil"),
+mape = c(mape2_1, mape2_2, mape2_3, mape2_4,  mape2_5, mape2_6, mape2_7,  mape2_8, mape2_9),
+sMAPE = c(smape2_1, smape2_2, smape2_3, smape2_4,  smape2_5, smape2_6, smape2_7,  smape2_8, smape2_9)
+  )
+
+View(resumen_modelos_2)
+```
+
+# plots
+
+```{r}
+plot_ss_1
+ggsave(filename = "plot_m1_ss.jpeg", plot = plot_ss_1, width = 12, height = 6)
+plot_ss_2
+ggsave(filename = "plot_m2_ss.jpeg", plot = plot_ss_2, width = 12, height = 6)
+plot_ss_3
+ggsave(filename = "plot_m3_ss.jpeg", plot = plot_ss_3, width = 12, height = 6)
+plot_ss_4
+ggsave(filename = "plot_m4_ss.jpeg", plot = plot_ss_4, width = 12, height = 6)
+plot_ss_5
+ggsave(filename = "plot_m5_ss.jpeg", plot = plot_ss_5, width = 12, height = 6)
+plot_ss_6
+ggsave(filename = "plot_m6_ss.jpeg", plot = plot_ss_6, width = 12, height = 6)
+plot_ss_7
+ggsave(filename = "plot_m7_ss.jpeg", plot = plot_ss_7, width = 12, height = 6)
+plot_ss_8
+ggsave(filename = "plot_m8_ss.jpeg", plot = plot_ss_8, width = 12, height = 6)
+plot_ss_9
+ggsave(filename = "plot_m9_ss.jpeg", plot = plot_ss_9, width = 12, height = 6)
+```
+
+# AQUI NO
+
+```{r}
+## modelo 3 terciles
+
+datos_tercil <- left_join(incidencias_tercil,
+                          defunciones_tercil,
+                          by = c("Servicio_salud",
+                               "SEXO",
+                               "AÑO",
+                               "EDAD_TERCIL")) %>% 
+  mutate(
+    SEXO = factor(SEXO),
+    QUINQUENIO = factor(EDAD_TERCIL),
+    Servicio_salud = factor(Servicio_salud) ) %>% 
+  group_by(Servicio_salud, SEXO, EDAD_TERCIL) %>% 
+  summarise(incidencias = sum(incidencias, na.rm = T),
+            defunciones = sum(defunciones, na.rm = T)) %>% 
+  
+  droplevels()
+
+##############################################################
+
+## ratio por sexo
+boxplot(incidencias/defunciones~ SEXO, data = datos_tercil, col = "lightgray")
+
+## comparar el ratio en hombres y mujeres
+boxplot(incidencias/defunciones ~ EDAD_TERCIL, data = datos_tercil, col = "lightgray")
+
+## comparar el ratio para hombres
+boxplot(incidencias/defunciones ~ EDAD_TERCIL, data = subset(datos_tercil, SEXO=="Hombre"), col = "lightgray", xlab= "terciles-Hombres") 
+
+## comparar el ratio para mujeres
+boxplot(incidencias/defunciones ~ EDAD_TERCIL, data = subset(datos_tercil, SEXO=="Mujer"), col = "lightgray", xlab= "terciles-Mujeres") 
+
+##############################################################
+
+## categoria de referencia
+datos_tercil$SEXO <- relevel(datos_tercil$SEXO, ref = "Mujer")
+
+## modelo GLM Poisson
+m3 <- glmmTMB::glmmTMB(
+  formula = incidencias ~ offset(log(defunciones)) + SEXO + EDAD_TERCIL +    ## variables modelo
+                   (1 | Servicio_salud),                                    ## intercapto aleatorio
+    data = datos_tercil,                                                       ## datos
+    family = nbinom2,
+  na.action = na.omit)
+
+summary(m3)
+
+##############################################################
+
+## evaluación del modelo
+performance::check_model(m3)
+DHARMa::simulateResiduals(m3, plot = T)
+
+res3_1 <- DHARMa::simulateResiduals(m3) 
+
+## diag:
+# DHARMa::plotResiduals(res3_1, form = predict(m3, type="response"))
+
+```
+
+### errores del modelo
+
+```{r}
+datos_v3 %>%
+  ungroup() %>% 
+  mutate(truth = incidencias,
+         estimate = predicho) %>%
+  metrics(truth = truth,             ## métricas del modelo
+          estimate = estimate)
+
+## rmse: error cuadrático medio
+## rsq: r2
+## mae: error medio absoluto
+
+( mape <- mean(abs((datos_v3$incidencias - datos_v3$predicho) / datos_v3$incidencias), na.rm = T) * 100 )
+## mape de 12%, al limite de lo aceptable.
+
+( cobertura_3 <- mean(datos_v3$cobertura_ic, na.rm = T) *100 )
+```
+
+### gráfica
+
+```{r}
+ggplot(datos_v3, aes(x = predicho, y = incidencias)) +
+  geom_point(alpha = 0.6, color = "blue") +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red") +
+  labs(
+    x = "Predicho por el modelo",
+    y = "Observado",
+    title = "Dispersión Observado vs. Predicho",
+    subtitle = "Línea roja = ajuste perfecto"
+  ) +
+  theme_minimal()
+
+
+ggplot(datos_v3, aes(x = predicho, y = residuos_pearson)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "loess", se = FALSE, color = "blue") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red", linewidth = 1) +
+  labs(
+    title = "Residuos de Pearson vs. Valores Predichos",
+    x = "Valor Predicho (Escala de respuesta)",
+    y = "Residuos de Pearson"
+  ) +
+  theme_minimal()
+```
+
+### estimación de casos
+
+```{r}
+## 1. Dataset con anti_join, para que entre mortalidad e incidencias solo dejar filas del df de mortalidad que no se usaron en el ajuste del modelo.
+
+data_pred_3 <- anti_join(defunciones_tercil,
+                          incidencias_tercil,    
+                          by = c("Servicio_salud",
+                               "SEXO",
+                               "AÑO",
+                               "EDAD_TERCIL")) %>% 
+ ## formato factor
+  mutate(
+    SEXO = factor(SEXO),
+    EDAD_TERCIL = factor(EDAD_TERCIL),
+    Servicio_salud = factor(Servicio_salud) ) %>% 
+  
+  ## quitar niveles que no se usarán
+  droplevels() %>% 
+  
+  ## info de casos colapsada por SS, SEXO y TERCIL
+  group_by(Servicio_salud, SEXO, EDAD_TERCIL) %>% 
+  summarise(
+            defunciones = sum(defunciones, na.rm = T)) %>% 
+  
+  ## quitar niveles que no se usarán
+  droplevels() %>% 
+  
+  filter(defunciones != 0)
+
+## 2. estimación de incidencias con mortalidad
+predicciones_3 <- predict(m3,                       ## modelo
+                        newdata = data_pred_3,      ## df con nuevos datos (las predicciones)
+                        type = "link",              ## la variables respuesta
+                        allow.new.levels = T,       ## esto permite predecir para servicios no vistos
+                        se.fit = T)     
+
+## añadir varible predicciones al df de datos.pred.
+#data_pred_1$pred_incidencias <- predicciones_1$fit 
+#data_pred_1$se_pred_incidencias <- predicciones_1$se.fit
+
+
+data_pred_3 <- data_pred_3 %>% 
+  mutate(
+    
+    ## añadir estimaciones + error estandar
+    predicho_link = !!predicciones_3$fit,
+    se_link = !!predicciones_3$se.fit,
+    
+    ## calculo de limites de IC 95%
+    inf_limite_link = predicho_link - 1.96 * se_link,
+    sup_limite_link = predicho_link + 1.96 * se_link,
+    
+    ## llevar a escala de respuesta
+    incidencia_predicho = exp(predicho_link),
+    incidencia = round(incidencia_predicho),
+    tipo = "ESTIMADO",
+    
+    ## Método delta
+    se = incidencia_predicho * se_link,
+     
+    ## IC 95%
+    inf_limite = exp(inf_limite_link),
+    sup_limite = exp(sup_limite_link)
+    )
+```
+
+### modelos alternativos
+
+```{r}
+datos.alt3 <- left_join(incidencias_tercil,
+                          defunciones_tercil,    
+                          by = c("Servicio_salud",
+                               "SEXO",
+                               "EDAD_TERCIL",
+                               "AÑO")) %>% 
+  ## formato factor
+  mutate(
+    SEXO = factor(SEXO),
+    EDAD_TERCIL = factor(EDAD_TERCIL),
+    Servicio_salud = factor(Servicio_salud) ) %>% 
+
+  ## quitar niveles que no se usarán
+  droplevels() 
+
+## cov AÑO
+
+m_3_1 <- glmmTMB::glmmTMB(
+  formula = incidencias ~ offset(log(Defunciones)) + SEXO + EDAD_TERCIL + AÑO +  ## variables modelo
+                  (1 | Servicio_salud),                                    ## intercapto aleatorio
+    data = datos.alt3,                                                       ## datos
+    family = nbinom2,
+  
+  ## no usar filas con NA
+  na.action = na.omit)
+
+summary(m_3_1)
+
+#####################################################
+
+## intercepto aleatorio AÑO
+
+m_3_2 <- glmmTMB::glmmTMB(
+  formula = incidencias ~ offset(log(Defunciones)) + SEXO + EDAD_TERCIL +   ## variables modelo
+                  (1 | Servicio_salud) + (1 | AÑO),                                    ## intercapto aleatorio
+    data = datos.alt3,                                                       ## datos
+    family = poisson(link = "log"),
+  
+  ## no usar filas con NA
+  na.action = na.omit)
+
+summary(m_3_2)
+
+#####################################################
+
+## AR(1)
+
+m_3_3 <- glmmTMB::glmmTMB(
+  formula = incidencias ~ offset(log(defunciones)) + SEXO + EDAD_TERCIL + 
+    
+    ## 1. Intercepto aleatorio para cada Servicio (igual que antes)
+    (1 | Servicio_salud) +  
+    
+    ## 2. ESTRUCTURA DE CORRELACIÓN AÑADIDA
+    ar1(factor(AÑO) + 0 | Servicio_salud),
+  
+  data = datos.alt3,
+  family = poisson(link = "log"),
+  na.action = na.omit
+)
+
+summary(m_3_3)
+performance::check_model(m_3_3)
+```
+
+## modelo cuartiles
+
+```{r}
+datos_cuartil <- left_join(incidencias_cuartil, 
+                           defunciones_cuartil,  
+                           by = c("Servicio_salud",
+                               "SEXO",
+                               "AÑO",
+                               "EDAD_CUARTIL")) %>% 
+
+  mutate(
+    SEXO = factor(SEXO),
+    EDAD_CUARTIL = factor(EDAD_CUARTIL),
+    Servicio_salud = factor(Servicio_salud) ) %>% 
+  
+  group_by(Servicio_salud, SEXO, EDAD_CUARTIL) %>% 
+  
+  summarise(incidencias = sum(incidencias, na.rm = T),
+            defunciones = sum(defunciones, na.rm = T)) %>% 
+  droplevels()
+
+##############################################################
+
+## ratio por sexo
+boxplot(incidencias/defunciones~ SEXO, data = datos_cuartil, col = "lightgray")
+
+## comparar el ratio en hombres y mujeres
+boxplot(incidencias/defunciones ~ EDAD_CUARTIL, data = datos_cuartil, col = "lightgray")
+
+## comparar el ratio para hombres
+boxplot(incidencias/defunciones ~ EDAD_CUARTIL, data = subset(datos_cuartil, SEXO=="Hombre"), col = "lightgray", xlab= "cuartiles-Hombres") 
+
+## comparar el ratio para mujeres
+boxplot(incidencias/defunciones ~ EDAD_CUARTIL, data = subset(datos_cuartil, SEXO=="Mujer"), col = "lightgray", xlab= "cuartiles-Mujeres") 
+
+##############################################################
+
+## categoria de referencia
+datos_cuartil$SEXO <- relevel(datos_cuartil$SEXO, ref = "Mujer")
+
+## modelo GLM Poisson
+m4 <- glmmTMB::glmmTMB(
+  formula = incidencias ~ offset(log(defunciones)) + SEXO + EDAD_CUARTIL +    ## variables modelo
+                   (1 | Servicio_salud),                                    ## intercepto aleatorio
+    data = datos_cuartil,                                                       ## datos
+    family = poisson(link = "log"),
+  na.action = na.omit)
+
+summary(m4)
+
+##############################################################
+
+## evaluación del modelo
+performance::check_model(m4)
+DHARMa::simulateResiduals(m4, plot = T)
+
+
+res4_1 <- DHARMa::simulateResiduals(m4) 
+
+## diag:
+DHARMa::plotResiduals(res4_1, form = predict(m4, type="response"))
+```
+
+### bondad ajuste modelo
+
+```{r}
+datos_v4 <- datos_cuartil 
+
+## Estimación media condicional. considera los efectos aleatorios y el BULP
+verif_4 <- predict(m4, 
+                   newdata = datos_v4, 
+                   type = "link",                  ## escala logartimica
+                   se.fit = TRUE,                  ## obtener error estandar
+                   allow.new.levels = T)
+
+##############################################################
+
+datos_v4 <- datos_v4 %>% 
+  mutate(
+    
+    ## añadir estimaciones + error estandar
+    predicho_link = !!verif_4$fit,
+    se_link = !!verif_4$se.fit,
+    
+    ## calculo de limites de IC 95%
+    inf_limite_link = predicho_link - 1.96 * se_link,
+    sup_limite_link = predicho_link + 1.96 * se_link,
+    
+    ## llevar a escala de respuesta
+    predicho = exp(predicho_link),
+    
+    ## Método delta
+    se = predicho * se_link,
+    
+    ## IC 95%
+    inf_limite = exp(inf_limite_link),
+    sup_limite = exp(sup_limite_link),
+    tipo = "OBSERVADO",
+    
+    ## variable indicadora de si el IC construido contiene el valor observado
+    cobertura_ic = ifelse(incidencias >= inf_limite & incidencias <= sup_limite, 1, 0),
+    
+    ## residuos
+    residuos = incidencias - predicho,
+    residuos_pearson = (incidencias - predicho)/sqrt(predicho),
+    residuos.est = residuos_pearson / se,
+    error_porcentual = ((predicho - incidencias) / incidencias) * 100 ) 
+
+head(datos_v4)
+```
+
+### errores modelo
+
+```{r}
+datos_v4 %>%
+  ungroup() %>% 
+  mutate(truth = incidencias,
+         estimate = predicho) %>%
+  metrics(truth = truth,             ## métricas del modelo
+          estimate = estimate)
+
+## rmse: error cuadrático medio
+## rsq: r2
+## mae: error medio absoluto
+
+( mape <- mean(abs((datos_v4$incidencias - datos_v4$predicho) / datos_v4$incidencias), na.rm = T) * 100 ) ## 6% de mape, muy bueno.
+
+( cobertura_4 <- mean(datos_v4$cobertura_ic, na.rm = T) *100 ) ## 76 de cobertura.
+```
+
+### gráfico m4
+
+```{r}
+ggplot(datos_v4, aes(x = predicho, y = incidencias)) +
+  geom_point(alpha = 0.6, color = "blue") +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red") +
+  labs(
+    x = "Predicho por el modelo",
+    y = "Observado",
+    title = "Dispersión Observado vs. Predicho",
+    subtitle = "Línea roja = ajuste perfecto"
+  ) +
+  theme_minimal()
+
+
+ggplot(datos_v4, aes(x = predicho, y = residuos_pearson)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "loess", se = FALSE, color = "blue") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red", linewidth = 1) +
+  labs(
+    title = "Residuos de Pearson vs. Valores Predichos",
+    x = "Valor Predicho (Escala de respuesta)",
+    y = "Residuos de Pearson"
+  ) +
+  theme_minimal()
+
+```
+
+### modelos alternativos
+
+```{r}
+datos.alt4 <- left_join(incidencias_cuartil,
+                          defunciones_cuartil,    
+                          by = c("Servicio_salud",
+                               "SEXO",
+                               "EDAD_CUARTIL",
+                               "AÑO")) %>% 
+  ## formato factor
+  mutate(
+    SEXO = factor(SEXO),
+    EDAD_CUARTIL = factor(EDAD_CUARTIL),
+    Servicio_salud = factor(Servicio_salud) ) %>% 
+
+  ## quitar niveles que no se usarán
+  droplevels() %>% 
+  
+   filter(!is.na(defunciones)) %>% 
+ # mutate(defunciones = ifelse(is.na(defunciones), 1, defunciones),
+  mutate(       AÑO_m = recode(AÑO,
+                        "1998" = 1,
+                        "1999" = 2,
+                        "2000" = 3,
+                        "2001" = 4,
+                        "2002" = 5,
+                        "2003" = 6,
+                        "2004" = 7,
+                        "2005" = 8,
+                        "2006" = 9,
+                        "2007" = 10,
+                        "2008" = 11,
+                        "2009" = 12,
+                        "2010" = 13,
+                        "2011" = 14,
+                        "2012" = 15,
+                        "2013" = 16,
+                        "2014" = 17,
+                        "2015" = 18,
+                        "2016" = 19,
+                        "2017" = 20,
+                        "2018" = 21,
+                        "2019" = 22))
+
+## cov AÑO
+
+m_4_1 <- glmmTMB::glmmTMB(
+  formula = incidencias ~ offset(log(defunciones)) + SEXO + EDAD_CUARTIL + AÑO_m + Servicio_salud + ## variables modelo
+                  (1 | Servicio_salud),                                    ## intercapto aleatorio
+    data = datos.alt4,                                                       ## datos
+    family = poisson(link = "log"),
+  
+  ## no usar filas con NA
+  na.action = na.omit)
+
+summary(m_4_1)
+
+##############################################################
+
+datos_v4_1 <- datos.alt4 
+
+## Estimación media condicional. considera los efectos aleatorios y el BULP
+verif_4_1 <- predict(m_4_1, 
+                   newdata = datos_v4_1, 
+                   type = "link",                  ## escala logartimica
+                   se.fit = TRUE,                  ## obtener error estandar
+                   allow.new.levels = T)
+
+##############################################################
+
+datos_v4_1 <- datos_v4_1 %>% 
+  mutate(
+    predicho_link = !!verif_4_1$fit,
+    se_link = !!verif_4_1$se.fit,
+    inf_limite_link = predicho_link - 1.96 * se_link,
+    sup_limite_link = predicho_link + 1.96 * se_link,
+    predicho = exp(predicho_link),
+    se = predicho * se_link,
+    inf_limite = exp(inf_limite_link),
+    sup_limite = exp(sup_limite_link),
+    tipo = "OBSERVADO",
+    cobertura_ic = ifelse(incidencias >= inf_limite & incidencias <= sup_limite, 1, 0),
+    residuos = incidencias - predicho,
+    residuos_pearson = (incidencias - predicho)/sqrt(predicho),
+    residuos.est = residuos_pearson / se,
+    error_porcentual = ((predicho - incidencias) / incidencias) * 100 ) 
+
+head(datos_v4_1)
+```
+
+### errores modelo
+
+```{r}
+datos_v4_1 %>%
+  ungroup() %>% 
+  mutate(truth = incidencias,
+         estimate = predicho) %>%
+  metrics(truth = truth,             ## métricas del modelo
+          estimate = estimate)
+
+## rmse: error cuadrático medio
+## rsq: r2
+## mae: error medio absoluto
+
+( mape <- mean(abs((datos_v4_1$incidencias - datos_v4_1$predicho) / datos_v4_1$incidencias), na.rm = T) * 100 )
+## mape de 45%
+
+## con año fijo + ss fijo, mape = 38%
+
+( cobertura_4_1 <- mean(datos_v4_1$cobertura_ic, na.rm = T) *100 ) ## 19% de cobertura.
+
+## con año fijo y ss fijo, cobertura = 17.5%
+```
+
+```{r}
+ggplot(datos_v4_1, aes(x = predicho, y = incidencias)) +
+  geom_point(alpha = 0.6, color = "blue") +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red") +
+  labs(
+    x = "Predicho por el modelo",
+    y = "Observado",
+    title = "Dispersión Observado vs. Predicho",
+    subtitle = "Línea roja = ajuste perfecto"
+  ) +
+  theme_minimal()
+
+
+ggplot(datos_v4_1, aes(x = predicho, y = residuos_pearson)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "loess", se = FALSE, color = "blue") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red", linewidth = 1) +
+  labs(
+    title = "Residuos de Pearson vs. Valores Predichos",
+    x = "Valor Predicho (Escala de respuesta)",
+    y = "Residuos de Pearson"
+  ) +
+  theme_minimal()
+
+```
+
+```{r}
+m_4_2 <- glmmTMB::glmmTMB(
+  formula = incidencias ~ offset(log(defunciones)) + SEXO + EDAD_CUARTIL + ## variables modelo
+                  (1 | Servicio_salud),                                    ## intercapto aleatorio
+    data = datos.alt4,                                                       ## datos
+    family = poisson(link = "log"),
+  
+  ## no usar filas con NA
+  na.action = na.omit)
+
+summary(m_4_2)
+
+anova(m_4_2, m_4_1)
+```
+
+```{r}
+#####################################################
+
+## intercepto aleatorio AÑO
+
+m_3_2 <- glmmTMB::glmmTMB(
+  formula = incidencias ~ offset(log(Defunciones)) + SEXO + EDAD_TERCIL +   ## variables modelo
+                  (1 | Servicio_salud) + (1 | AÑO),                                    ## intercapto aleatorio
+    data = datos.alt3,                                                       ## datos
+    family = poisson(link = "log"),
+  
+  ## no usar filas con NA
+  na.action = na.omit)
+
+summary(m_3_2)
+
+#####################################################
+
+## AR(1)
+
+m_3_3 <- glmmTMB::glmmTMB(
+  formula = incidencias ~ offset(log(defunciones)) + SEXO + EDAD_TERCIL + 
+    
+    ## 1. Intercepto aleatorio para cada Servicio (igual que antes)
+    (1 | Servicio_salud) +  
+    
+    ## 2. ESTRUCTURA DE CORRELACIÓN AÑADIDA
+    ar1(factor(AÑO) + 0 | Servicio_salud),
+  
+  data = datos.alt3,
+  family = poisson(link = "log"),
+  na.action = na.omit
+)
+
+summary(m_3_3)
+performance::check_model(m_3_3)
+```
+
+## modelo descartado DESAGREGADO POR AÑO
+
+```{r eval = F}
+## verif modelo
+datos.verif_2_2 <- datos.m1 %>%
+  
+  ## es importante añadir este comando ya que los dos df (de ajuste del modelo y datos para su verificación) deben tener la misma cantidad de filas.
+  filter(!is.na(Defunciones))
+
+## Estimación media condicional. considera los efectos aleatorios y el BULP
+verif_2_2 <- predict(m2_2, 
+                   newdata = datos.verif_2_2, 
+                   type = "link", 
+                   se.fit = TRUE,
+                  allow.new.levels = T)
+
+datos.verif_2_2$predicho <- verif_2_2$fit 
+datos.verif_2_2$se <- verif_2_2$se.fit
+
+## creación de IC 95%. Válido pues la inferencia es sobre el valor esperado, lambda, que es el EMV, que distribuye aprox normal.
+datos.verif_2_2$inf_link <- datos.verif_2_2$predicho - 1.96 * datos.verif_2_2$se
+datos.verif_2_2$sup_link <- datos.verif_2_2$predicho + 1.96 * datos.verif_2_2$se
+
+datos.verif_2_2 <- datos.verif_2_2 %>%
+  mutate(
+    predicho = exp(predicho),
+    se = exp(se),
+    inf_link = exp(inf_link),
+    sup_link = exp(sup_link),
+    cobertura_ic = ifelse(incidencias >= inf_link & incidencias <= sup_link, 1, 0))
+
+## proporcion de cobertura
+( prop  = sum(datos.verif_2_2$cobertura_ic) / length(datos.verif_2_2$cobertura_ic) * 100)
+## en 77% de ocasiones el ic incluye la incidencia observada.
+
+performance::check_model(m2_2)
+
+
+## predicciones modelo:
+datos.pred_2_2 <- datos.m1 %>%
+  filter(!(QUINQUENIO %in% c("0-4", "5-19", "10-14", "15-19"))) %>%
+  
+  droplevels() %>%                    
+  
+  filter(!is.na(Defunciones)) %>%
+  
+  dplyr::select(-incidencias)
+
+## asegurar que queden los mismos niveles entre datos.modelo y datos.pred
+datos.pred_2_2$SEXO <- factor(datos.pred_2_2$SEXO, levels = levels(datos.m1$SEXO))
+datos.pred_2_2$QUINQUENIO <- factor(datos.pred_2_2$QUINQUENIO, levels = levels(datos.m1$QUINQUENIO))
+datos.pred_2_2$Servicio_salud <- factor(datos.pred_2_2$Servicio_salud, levels = levels(datos.m1$Servicio_salud))
+
+## prediccion de incidencias con el df datos.pred utilizando los coeficientes del modelo ajustado m1
+predicciones_2_2 <- predict(m2_2,                       ## modelo
+                        newdata = datos.pred_2_2,     ## df con nuevos datos (las predicciones)
+                        type = "response",        ## la variables respuesta
+                        allow.new.levels = T,     ## esto permite predecir para servicios no vistos
+                        se.fit = T)     
+
+## añadir varible predicciones al df de datos.pred.
+datos.pred_2_2$pred_incidencias <- predicciones_2_2$fit 
+datos.pred_2_2$se_pred_incidencias <- predicciones_2_2$se.fit
+
+
+## unir df datos m1 + datos.verif + datos pred.
+datos.m1 <- datos.m1 %>%
+  mutate(
+    tipo = case_when(
+      is.numeric(incidencias) ~ "Observado",
+      TRUE ~ NA_character_) )
+
+datos.pred_2_2 <- datos.pred_2_2 %>%
+    mutate(tipo = case_when(is.numeric(pred_incidencias) ~ "Predicho", TRUE ~ NA_character_)) %>%
+    rename(incidencias= pred_incidencias) %>%
+    dplyr::select(-se_pred_incidencias)
+
+datos.completos_2_2 <- rbind(datos.m1, datos.pred_2_2) %>%
+  unique()
+
+save(datos.completos_2_2, file = "datos.oe2_2_2.RData")
+
+```
+
+# 5. Grafica del modelo ajustado
+
+```{r}
+ggplot(datos.verif, aes(x = predicho, y = incidencias)) +
+  geom_point(alpha = 0.6, color = "blue") +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red") +
+  labs(
+    x = "Predicho por el modelo",
+    y = "Observado",
+    title = "Dispersión Observado vs. Predicho",
+    subtitle = "Línea roja = ajuste perfecto"
+  ) +
+  theme_minimal()
+```
+
+```{r fig.height= 25, fig.width= 20}
+## Plot incidencias en el timepo
+plot.res <- datos.verif %>%
+  group_by(Servicio_salud, AÑO) %>%
+  summarise(
+    incidencias = sum(incidencias),
+    predicho = sum(predicho),
+    .groups = "drop") %>%
+  
+  ##pasar a formato long para plotear
+  pivot_longer(cols = c(incidencias, predicho), ## hacerlo long para plotear
+               names_to = "Tipo",
+               values_to = "Valor") %>%
+   mutate(Tipo = recode(Tipo,
+                       incidencias = "Observado",
+                       predicho = "Predicho"))
+```
+
+```{r fig.height= 25, fig.width= 20}
+plot.3<- ggplot(plot.res, 
+                
+## especificiaciones de las aesthetic del gráfico
+                aes(x = AÑO,           ## dejar en el eje X los años
+                     y = Valor,        ## en el eje Y van los valores (incidencias obs y predichas)
+                     color = Tipo,     ## habrá un color distinto por cada nivel de la varibale tipo
+                     linetype = Tipo,  ## los tipo de línea serán según los niveles de la variable tipo
+                     group = Tipo)) +  ## los valores a gráficar se agruparán segun la variable tipo
+
+## especificaciones del grosor de cada línea  
+  geom_line(size = 1.2) +
+
+## hacer un facet con una columna donde el eje Y varíe en cada plot segúnn los valores que toma para cada servicio
+  facet_wrap(~ Servicio_salud, ncol = 1, scales = "free_y") +
+
+##  Escalar el eje X según los años
+  scale_x_continuous(breaks = unique(plot.res$AÑO)) +
+
+## etiquetas del: título, subtítulo, eje X y eje Y; incando los colores y tipo de linea
+  labs(title = "Incidencias observadas vs predichas",
+       subtitle = "Por Servicio de Salud y Año",
+       x = "Año",
+       y = "Casos nuevos de cáncer gástrico",
+       color = "Casos nuevos",         ## título de la leyenda
+       linetype = "Casos nuevos") +    ## lineas para cada
+  
+## tema del gráfico
+  theme_minimal(base_size = 14) +
+
+## especificaciones del tamaño de letra
+  theme(
+    strip.text = element_text(size = 20),                 
+    axis.text.x = element_text(size = 15, angle = 45, hjust = 1),
+    axis.text.y = element_text(size=15),
+    plot.title = element_text(size = 25, face = "bold"),
+    plot.subtitle = element_text(size = 20),
+    legend.text = element_text(size = 20),                 
+    legend.title = element_text(size = 22, face = "bold"),
+    axis.title = element_text(size = 20)
+  )
+plot.3
+# ggsave("res_plot_3.jpeg",   plot.3, width = 20, height = 25, dpi = 300)
+```
+
+```{r}
+## plot res con geom_ribbon. para esto es NECESARIO tener todo en columnas separadas, NO en long
+plot.res2 <- datos.verif %>%
+  group_by(Servicio_salud, AÑO) %>%
+  summarise(
+    incidencias = sum(incidencias),
+    predicho = sum(predicho),
+    ic_sup = sum(sup_link),
+    ic_inf = sum(inf_link),
+    cobertura_ic = ifelse(incidencias >= ic_inf & incidencias <= ic_sup, 1, 0),
+  .groups = "drop")
+
+## cobertura IC al nivel de datos agrupados.     
+( prop  = sum(plot.res2$cobertura_ic) / length(plot.res2) )
+```
+
+```{r fig.height= 25, fig.width= 20}
+plot.3_5 <- ggplot(plot.res2, aes(x = AÑO)) +
+  
+  # Banda de IC
+  geom_ribbon(aes(ymin = ic_inf, 
+                  ymax = ic_sup), 
+              fill = "blue", alpha = 0.2) +
+  
+  # Línea predicha
+  geom_line(aes(y = predicho, 
+                color = "Predicho", 
+                linetype = "Predicho"), 
+            size = 1.2) +
+  
+  # Línea observada
+  geom_line(aes(y = incidencias, 
+                color = "Observado",
+                linetype = "Observado"), 
+            size = 1.2) +
+  
+  facet_wrap(~ Servicio_salud, ncol = 1, scales = "free_y") +
+  scale_x_continuous(breaks = unique(plot.res2$AÑO)) +
+  labs(
+    title = "Incidencias observadas vs predichas con intervalos de confianza",
+    subtitle = "Por Servicio de Salud y Año",
+    x = "Año",
+    y = "Casos nuevos de cáncer gástrico",
+    color = "Casos nuevos",
+    linetype = "Casos nuevos"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    strip.text = element_text(size = 20),
+    axis.text.x = element_text(size = 15, angle = 45, hjust = 1),
+    axis.text.y = element_text(size=15),
+    plot.title = element_text(size = 25, face = "bold"),
+    plot.subtitle = element_text(size = 20),
+    legend.text = element_text(size = 20),
+    legend.title = element_text(size = 22, face = "bold"),
+    axis.title = element_text(size = 20)
+  )
+plot.3_5
+## ggsave("res_plot_3_5.jpeg",   plot.3_5, width = 20, height = 25, dpi = 300)
+```
+
+## 4.4. Estimación a partir de los datos de mortalidad.
+
+```{r}
+## prediccion de incidencias a partir del datos de mortalidad, con esta info de probará el modelo ajustado.
+## hacer df con datos de SS, pero que no tienen el dato de incidencia de RPC.
+datos.pred <- datos.modelo %>%
+  
+  ## filtar niveles  de quinquenio que no están
+  filter(!(QUINQUENIO %in% c("10-14", "0-4", "15-19"))) %>%
+  
+  ## sacar niveles
+  droplevels() %>%                    
+  
+  ## son las filas donde quiero predecir a partir del modelo, es decir, donde no tengo información de incidencia, obtener solo a partir de las defunciones.
+  filter(!is.na(Defunciones)) %>%
+  
+  ## sacar columna
+  dplyr::select(-incidencias)
+
+# datos.pred$incidencias = NA   
+
+## asegurar que queden los mismos niveles entre datos.modelo y datos.pred
+datos.pred$SEXO <- factor(datos.pred$SEXO, levels = levels(datos.m1$SEXO))
+datos.pred$QUINQUENIO <- factor(datos.pred$QUINQUENIO, levels = levels(datos.m1$QUINQUENIO))
+datos.pred$Servicio_salud <- factor(datos.pred$Servicio_salud, levels = levels(datos.m1$Servicio_salud))
+
+## datos.pred y datos.m1 tienen la misma estructura de DF salvo en que el primero no tiene la variable incidencia
+```
+
+```{r}
+## prediccion de incidencias con el df datos.pred utilizando los coeficientes del modelo ajustado m1
+predicciones <- predict(m2,                       ## modelo
+                        newdata = datos.pred,     ## df con nuevos datos (las predicciones)
+                        type = "response",        ## la variables respuesta
+                        allow.new.levels = T,     ## esto permite predecir para servicios no vistos
+                        se.fit = T)     
+
+## añadir varible predicciones al df de datos.pred.
+datos.pred$pred_incidencias <- predicciones$fit 
+datos.pred$se_pred_incidencias <- predicciones$se.fit
+```
+
+```{r}
+## unir df datos m1 + datos.verif + datos pred.
+datos.m1 <- datos.m1 %>%
+  mutate(
+    tipo = case_when(
+      is.numeric(incidencias) ~ "Observado",
+      TRUE ~ NA_character_) ) %>%
+  dplyr::select(-incidencia_disponible)
+```
+
+```{r}
+## este no es necesario
+datos.verif <- datos.verif %>%
+  pivot_longer(
+    cols = c(incidencias, predicho), ## hacerlo long para plotear
+               names_to = "tipo",
+               values_to = "incidencias") %>%
+   mutate(tipo = recode(tipo,
+                       incidencias = "Observado",
+                       predicho = "Predicho")) %>%
+  dplyr::select(Servicio_salud, AÑO, SEXO, QUINQUENIO, Defunciones, incidencias, tipo)
+```
+
+```{r}
+datos.pred <- datos.pred %>%
+    mutate(tipo = case_when(is.numeric(pred_incidencias) ~ "Predicho", TRUE ~ NA_character_)) %>%
+    rename(incidencias= pred_incidencias) %>%
+    dplyr::select(-se_pred_incidencias)
+```
+
+```{r}
+datos.completos <- rbind(datos.m1, datos.verif, datos.pred) %>%
+  unique()
+## este df esta bien.
+```
+
+```{r eval=F}
+save(datos.completos, file = "datos.oe2.RData")
+```
+
+```{r}
+## Gráfico de incidencias
+plot.final <- datos.completos %>%
+  group_by(Servicio_salud, AÑO, tipo) %>%
+  summarise(incidencias = sum(incidencias))
+```
+
+```{r fig.height= 35, fig.width= 25}
+plot.7 <- ggplot(plot.final, aes(x = AÑO,
+                                 y = incidencias,
+                                 group = tipo,
+                                 color = tipo,
+                                 linetype = tipo))+
+  
+  geom_line(size = 1.2)+
+  
+  facet_wrap(~ Servicio_salud, ncol = 2, scales = "free_y") +
+  
+   scale_x_continuous(breaks = unique(plot.res$AÑO)) +
+
+## etiquetas del: título, subtítulo, eje X y eje Y; incando los colores y tipo de linea
+  labs(title = "Incidencias observadas vs predichas",
+       subtitle = "Por Servicio de Salud y Año",
+       x = "Año",
+       y = "Casos nuevos de cáncer gástrico",
+       color = "Casos nuevos",         ## título de la leyenda
+       linetype = "Casos nuevos") +    ## lineas para cada
+  
+## tema del gráfico
+  theme_minimal(base_size = 14) +
+
+## especificaciones del tamaño de letra
+  theme(
+    strip.text = element_text(size = 20),                 
+    axis.text.x = element_text(size = 15, angle = 45, hjust = 1),
+    axis.text.y = element_text(size=15),
+    plot.title = element_text(size = 25, face = "bold"),
+    plot.subtitle = element_text(size = 20),
+    legend.text = element_text(size = 20),                 
+    legend.title = element_text(size = 22, face = "bold"),
+   axis.title = element_text(size = 20)
+  )
+plot.7
+# ggsave("plot7.jpeg", plot.7, width = 35, height = 25, dpi = 300)  
+```
+
+## 4.5. Diagnósticos del modelo (Post-Hoc).
+
+```{r}
+set.seed(1989)
+sim <- simulateResiduals(m2, plot= T, n = 1000) ## el análisis de los residuos indica que que existe alguna desviación sistemática entre el modleo y los datos, por alguna estructura no capturada; posiblemente: efecto no lineal del año (incluri como un factor o spline); alguna cov que falta; un efecto de interaccion, o prob de especificación.
+
+# plotResiduals(sim, form = datos.m1$Servicio_salud)
+
+## test de dispersión
+testDispersion(sim) #no hay evidencia para suponer que hya sub o sobre dispersión, p-valor = 0.58
+
+## test de uniformidad
+testUniformity(sim)    ## no sigue una distribución uniforme
+
+## Exceso de ceros
+testZeroInflation(sim) ## problema con los zero, se están predicion mas de los hay. Este es mas bien un problema de la distribución teorica Poisson, las imulaciones del modelo esperan mas zero de los que hay (no hay jaja)
+
+## autocorrelación
+# testTemporalAutocorrelation(sim, time = datos.m1$AÑO)
+
+## al añadir el año tener cuido en que no añadirlo como una covariable mas, sino que ver el efecto del año por servicio
+## revisar funcion simulate para las predicciones.
+
+```
+
+```{r fig.width=15}
+mf<- model.frame(m2)
+plotResiduals(sim, form = mf$Servicio_salud, main = "Residuos por Servicio de Salud")
+## no ajustra bien por SS.
+```
+
+```{r}
+performance::check_model(m2)
+```
+
+```{r}
+## recomendación:
+## podría incluirse el factor tiempo en el modelom ns(AÑO, df = 3)
+## o permitir que la eondiente varie entre SS, (1+AÑO|SS)
+```
+
+```{r}
+# es problemáico en el contexto global de la tesis?
+## notar que el propósito de este modelo (MLMG) no es capatar la tendencia temporal, sino obtener una estimación basal de incidencias por SS-SEXO-Qinquenio. y las dinámicas de temporalidad (AÑO) se manejan luego en los modelos de predicción. Ahora, si se incluyera el año en este modelo (MLMG), se mezclaría la parte estructural dadas por el grupo y las covariables con la tendencia temporal. Con el análisis actual está separada la estructura respescto a la tendencia (OE3).
+## En este sentido, con este modelo no se usca el mejor ajuste global, sino que una estrcutra que permitra estimar de manera consistente. En este sentido, no se afecta el objetivo pricnipal de este modelo.
+## Respecto a este modelo,DHARMA indica que hay diferencias sistemáticas por SS. Es esperable porque el modelo es parsimonioso(quiza demasiado), y su objetivo es geenrar estimaciones consistentes y extrapolables.
+```
+
+```{r fig.width= 25, fig.height=15}
+## gráfico de residuos.
+
+plot4 <- ggplot(datos.verif , 
+       aes(x = incidencias, y = residuos)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray40") +
+  geom_point(alpha = 0.6, color = "steelblue") +
+  facet_grid(SEXO ~ QUINQUENIO) +  # O puedes usar Servicio_salud ~ sexo, etc.
+  labs(
+    x = "Incidencia observada",
+    y = "Residuos (observado - predicho)",
+    title = "Residuos del modelo según incidencia observada",
+    subtitle = "Gráficos por sexo y grupo etario"
+  ) +
+  theme_minimal(base_size = 14)+
+   theme(
+    strip.text = element_text(size = 20),                 
+    axis.text.x = element_text(size = 15, angle = 45, hjust = 1),
+    axis.text.y = element_text(size=15),
+    plot.title = element_text(size = 25, face = "bold"),
+    plot.subtitle = element_text(size = 20),
+    axis.title = element_text(size = 20)
+  )
+plot4
+```
+
+```{r fig.width= 25, fig.height=15}
+## gráfico de residuos estandarizados.
+
+plot5 <- ggplot(datos.verif , 
+       aes(x = incidencias, y = residuos.est)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray40") +
+  geom_point(alpha = 0.6, color = "steelblue") +
+  facet_grid(SEXO ~ QUINQUENIO) +  # O puedes usar Servicio_salud ~ sexo, etc.
+  labs(
+    x = "Incidencia observada",
+    y = "Residuos estandarizados",
+    title = "Residuos estandarizados del modelo según incidencia observada",
+    subtitle = "Gráficos por sexo y grupo etario"
+  ) +
+  theme_minimal(base_size = 14)+
+   theme(
+    strip.text = element_text(size = 20),                 
+    axis.text.x = element_text(size = 15, angle = 45, hjust = 1),
+    axis.text.y = element_text(size=15),
+    plot.title = element_text(size = 25, face = "bold"),
+    plot.subtitle = element_text(size = 20),
+    axis.title = element_text(size = 20)
+  )
+plot5
+```
+
+```{r fig.width= 25, fig.height=15}
+plot6 <- ggplot(datos.verif , 
+       aes(x = incidencias, y = residuos.pearson)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray40") +
+  geom_point(alpha = 0.6, color = "steelblue") +
+  facet_grid(SEXO ~ QUINQUENIO) +  # O puedes usar Servicio_salud ~ sexo, etc.
+  labs(
+    x = "Incidencia observada",
+    y = "Residuos de Pearson",
+    title = "Residuos de Pearson del modelo según incidencia observada",
+    subtitle = "Gráficos por sexo y grupo etario"
+  ) +
+  theme_minimal(base_size = 14)+
+   theme(
+    strip.text = element_text(size = 20),                 
+    axis.text.x = element_text(size = 15, angle = 45, hjust = 1),
+    axis.text.y = element_text(size=15),
+    plot.title = element_text(size = 25, face = "bold"),
+    plot.subtitle = element_text(size = 20),
+    axis.title = element_text(size = 20)
+  )
+
+plot6
+
+# ggsave("res_plot_6.jpeg",   plot6, width = 25, height = 25, dpi = 300)
+```
+
+```{r fig.width= 25, fig.height=15}
+## si bien se observa sobredispersión, no se observan sesgos en los residuos. HACER ALGO CON ESA SOBREDISPERSIÓN.
+## resumir el gráfico, con colores de puntos distintos para hombres y hombres y mujeres. entonces, sacar el facet.
+```
+
+```{r}
+## revisar la varianza; o considerar un binomial negativo,
+## ver linealidad de los residuos.
+## ver si se puede explicar un termino cuadratico, ya que se supone una linea lisas, pero no se ve en los años.
+```
+
+## modelos descartados p2
+
+```{r}
+datos.alt4 <- left_join(incidencias_cuartil,
+                          defunciones_cuartil,    
+                          by = c("Servicio_salud",
+                               "SEXO",
+                               "EDAD_CUARTIL",
+                               "AÑO")) %>% 
+  ## formato factor
+  mutate(
+    SEXO = factor(SEXO),
+    EDAD_CUARTIL = factor(EDAD_CUARTIL),
+    Servicio_salud = factor(Servicio_salud) ) %>% 
+
+  ## quitar niveles que no se usarán
+  droplevels() 
+
+## cov AÑO
+
+m_4_1 <- glmmTMB::glmmTMB(
+  formula = incidencias ~ offset(log(defunciones)) + SEXO + EDAD_CUARTIL + AÑO +  ## variables modelo
+                  (1 | Servicio_salud),                                    ## intercapto aleatorio
+    data = datos.alt4,                                                       ## datos
+    family = poisson(link = "log"),
+  
+  ## no usar filas con NA
+  na.action = na.omit)
+
+summary(m_4_1)
+performance::check_model(m_4_1)
+
+#####################################################
+
+## intercepto aleatorio AÑO
+
+m_4_2 <- glmmTMB::glmmTMB(
+  formula = incidencias ~ offset(log(Defunciones)) + SEXO + EDAD_CUARTIL +   ## variables modelo
+                  (1 | Servicio_salud) + (1 | AÑO),                                    ## intercapto aleatorio
+    data = datos.alt4,                                                       ## datos
+    family = poisson(link = "log"),
+  
+  ## no usar filas con NA
+  na.action = na.omit)
+
+summary(m_4_2)
+
+#####################################################
+
+## AR(1)
+
+m_4_3 <- glmmTMB::glmmTMB(
+  formula = incidencias ~ offset(log(defunciones)) + SEXO + EDAD_CUARTIL + 
+    
+    ## 1. Intercepto aleatorio para cada Servicio (igual que antes)
+    (1 | Servicio_salud)+
+    
+    ## 2. ESTRUCTURA DE CORRELACIÓN AÑADIDA
+    ar1(factor(AÑO) + 0 | Servicio_salud),
+  
+  data = datos.alt4,
+  family = poisson(link = "log"),
+  na.action = na.omit
+)
+
+summary(m_4_3)
+performance::check_model(m_4_3)
+```
+
+```{r}
+datos.alt4_v <- datos.alt4 
+
+## Estimación media condicional. considera los efectos aleatorios y el BULP
+verif_4 <- predict(m_4_1, 
+                   newdata = datos.alt4_v, 
+                   type = "link",                  ## escala logartimica
+                   se.fit = TRUE,                  ## obtener error estandar
+                   allow.new.levels = T)
+
+##############################################################
+
+datos.alt4_v <- datos.alt4_v %>% 
+  mutate(
+    
+    ## añadir estimaciones + error estandar
+    predicho_link = !!verif_4$fit,
+    se_link = !!verif_4$se.fit,
+    
+    ## calculo de limites de IC 95%
+    inf_limite_link = predicho_link - 1.96 * se_link,
+    sup_limite_link = predicho_link + 1.96 * se_link,
+    
+    ## llevar a escala de respuesta
+    predicho = exp(predicho_link),
+    
+    ## Método delta
+    se = predicho * se_link,
+    
+    ## IC 95%
+    inf_limite = exp(inf_limite_link),
+    sup_limite = exp(sup_limite_link),
+    tipo = "OBSERVADO",
+    
+    ## variable indicadora de si el IC construido contiene el valor observado
+    cobertura_ic = ifelse(incidencias >= inf_limite & incidencias <= sup_limite, 1, 0),
+    
+    ## residuos
+    residuos = incidencias - predicho,
+    residuos_pearson = (incidencias - predicho)/sqrt(predicho),
+    residuos.est = residuos_pearson / se,
+    error_porcentual = ((predicho - incidencias) / incidencias) * 100 ) 
+
+head(datos.alt4_v )
+```
+
+```{r}
+ggplot(datos.alt4_v, aes(x = predicho, y = incidencias)) +
+  geom_point(alpha = 0.6, color = "blue") +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red") +
+  labs(
+    x = "Predicho por el modelo",
+    y = "Observado",
+    title = "Dispersión Observado vs. Predicho",
+    subtitle = "Línea roja = ajuste perfecto"
+  ) +
+  theme_minimal()
+
+
+ggplot(datos.alt4_v, aes(x = predicho, y = residuos_pearson)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "loess", se = FALSE, color = "blue") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red", linewidth = 1) +
+  labs(
+    title = "Residuos de Pearson vs. Valores Predichos",
+    x = "Valor Predicho (Escala de respuesta)",
+    y = "Residuos de Pearson"
+  ) +
+  theme_minimal()
+```
+
+## 4.4.5 Estimación de casos a partir de mortalidad
+
+```{r}
+## 1. Dataset con anti_join, para que entre mortalidad e incidencias solo dejar filas del df de mortalidad que no se usaron en el ajuste del modelo.
+
+data_pred_4 <- anti_join(defunciones_cuartil,
+                          incidencias_cuartil,    
+                          by = c("Servicio_salud",
+                               "SEXO",
+                               "AÑO",
+                               "EDAD_CUARTIL")) %>% 
+ ## formato factor
+  mutate(
+    SEXO = factor(SEXO),
+    EDAD_CUARTIL = factor(EDAD_CUARTIL),
+    Servicio_salud = factor(Servicio_salud) ) %>% 
+
+  ## quitar niveles que no se usarán
+  droplevels() %>% 
+  
+  ## info de casos colapsada por SS, SEXO y QQ
+  group_by(Servicio_salud, SEXO, EDAD_CUARTIL) %>% 
+  summarise(
+            defunciones = sum(defunciones, na.rm = T)) %>% 
+  
+  ## quitar niveles que no se usarán
+  droplevels() %>% 
+  
+  filter(defunciones != 0)
+
+## 2. estimación de incidencias con mortalidad
+predicciones_4 <- predict(m4,                       ## modelo
+                        newdata = data_pred_4,      ## df con nuevos datos (las predicciones)
+                        type = "link",              ## la variables respuesta
+                        allow.new.levels = T,       ## esto permite predecir para servicios no vistos
+                        se.fit = T)     
+
+data_pred_4 <- data_pred_4 %>% 
+  mutate(
+    
+    ## añadir estimaciones + error estandar
+    predicho_link = !!predicciones_4$fit,
+    se_link = !!predicciones_4$se.fit,
+    
+    ## calculo de limites de IC 95%
+    inf_limite_link = predicho_link - 1.96 * se_link,
+    sup_limite_link = predicho_link + 1.96 * se_link,
+    
+    ## llevar a escala de respuesta
+    incidencia_predicho = exp(predicho_link),
+    incidencia = round(incidencia_predicho),
+    tipo = "ESTIMADO",
+    
+    ## Método delta
+    se = incidencia_predicho * se_link,
+     
+    ## IC 95%
+    inf_limite = exp(inf_limite_link),
+    sup_limite = exp(sup_limite_link)
+    )
+```

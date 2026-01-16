@@ -1,0 +1,658 @@
+---
+title: "OE2_RIM"
+author: "CFP"
+format: html
+editor: visual
+---
+
+```{r}
+gc()
+setwd("~/Desktop/U_CHILE/MG_BIOESTADÍSTICA/TESIS/DATOS PÚBLICOS/OE2")
+```
+
+```{r}
+library(tidyverse)             ## adm de datos
+library(summarytools)          ## libreria de resúmenes.
+library(glmmTMB)               ## intervalos de predicción
+library(DHARMa)                ## analisis de residuos
+library(marginaleffects)       ## efectos marginales.
+library(easystats)             ## evaluación del modelo
+```
+
+# 1. Datos por quinquenio y sexo
+
+## 1.1. Incidencias.
+
+```{r}
+## Carga de datos de incidencia quinquenios
+load("~/Desktop/U_CHILE/MG_BIOESTADÍSTICA/TESIS/DATOS PÚBLICOS/REGISTRO POBALCIONAL DE CÁNCER/incidencias_oe2.RData")
+incidencias <- incidencias_oe2 %>% mutate(AÑO = as.character(AÑO),
+                                          AÑO = as.numeric(AÑO))
+rm(incidencias_oe2)
+```
+
+## 1.2. Defunciones.
+
+```{r}
+## carga de datos de defunciones quinquenios
+load("~/Desktop/U_CHILE/MG_BIOESTADÍSTICA/TESIS/DATOS PÚBLICOS/DEF_DEIS/defunciones_oe2.RData") # 2002 - 2019
+defunciones <- defunciones_oe2 %>% filter(!is.na(defunciones))
+
+load("~/Desktop/U_CHILE/MG_BIOESTADÍSTICA/TESIS/DATOS PÚBLICOS/DEF_DEIS/defunciones_oe2_2022.RData") #2002-2022
+defunciones_2 <- defunciones_oe2_2022 %>% filter(!is.na(defunciones))
+
+rm(defunciones_oe2, defunciones_oe2_2022)
+```
+
+## 1.3. Proporciones de casos
+
+```{r}
+## carga de datos prop de casos por año
+load("~/Desktop/U_CHILE/MG_BIOESTADÍSTICA/TESIS/DATOS PÚBLICOS/REGISTRO POBALCIONAL DE CÁNCER/prop_casos_año.RData")
+
+## carga de datos prop de casos por año en cada zona
+load("~/Desktop/U_CHILE/MG_BIOESTADÍSTICA/TESIS/DATOS PÚBLICOS/REGISTRO POBALCIONAL DE CÁNCER/prop_zona_año.RData")
+
+## carga de datos por zona.
+load("~/Desktop/U_CHILE/MG_BIOESTADÍSTICA/TESIS/DATOS PÚBLICOS/REGISTRO POBALCIONAL DE CÁNCER/df_zonas.RData")
+```
+
+# 2. Cálculo de RIM
+
+```{r}
+## calculo de razón incidencia mortalidad.
+rim <- left_join(incidencias, defunciones, by = c("Servicio_salud",
+                                                  "AÑO",
+                                                  "SEXO",
+                                                  "QUINQUENIO"))
+rim <- rim %>%
+  mutate(RIM = round(incidencias/defunciones,2))  %>% ## esta es la estructura que utiliza estadística del minsal
+  filter(AÑO >=2002)
+```
+
+# 3. Graficos RIM
+
+## RIM - año
+
+```{r fig.width= 10}
+plot0 <- rim %>% 
+  group_by(AÑO) %>% 
+  summarise(incidencias = sum(incidencias),
+            defunciones = sum(defunciones, na.rm = T)) %>% 
+  mutate(rim = incidencias/defunciones)
+
+plot_rim_pais <- ggplot(data = plot0, aes(x = AÑO, y = rim)) +
+  geom_line(color = "steelblue", linewidth = 1.2) +
+  geom_point(color = "steelblue", size = 2) +
+  geom_smooth(method = "lm", se = F, color = "red", linetype = "solid", size = 1) +
+ scale_x_continuous(
+    breaks = seq(min(plot0$AÑO), max(plot0$AÑO), by = 1)) +
+  theme_minimal(base_size = 14) +
+  labs(
+    title = "Tendencia del RIM  por año",
+    x = "Año",
+    y = "RIM (Incidencias / Defunciones)"
+  ) +
+  theme(
+    panel.grid.minor = element_blank(),
+    plot.title = element_text(face = "bold", hjust = 0.5)
+  )
+plot_rim_pais
+#ggsave(filename = "rim_plot_1.jpeg", plot_rim_pais, width = 10)
+```
+
+## 3.1. RIM año y SS
+
+```{r fig.width=8, fig.height=15}
+plot1 <- rim %>%
+  
+  ## seleccion variables a estudiar
+  dplyr::select(Servicio_salud, SEXO, QUINQUENIO, AÑO, defunciones, incidencias) %>%
+  
+  ## agrupar por SS y AÑO
+  group_by(Servicio_salud, AÑO) %>%
+  
+  ## resumir incidencias y defunciones
+  summarise(
+    incidencias = sum(incidencias),
+    defunciones = sum(defunciones, 
+              na.rm = T) ) %>%
+  
+  ## creación de la variable rim
+  mutate(rim = round(incidencias/defunciones,2)) %>% 
+  
+  ungroup() %>% 
+  
+  ## orden de los SS
+  mutate(Servicio_salud = fct_relevel(Servicio_salud,
+                                      "Servicio de Salud Arica y Parinacota",
+                                      "Servicio de Salud Antofagasta",
+                                      "Servicio de Salud Del Maule",
+                                      "Servicio de Salud Biobío",
+                                      "Servicio de Salud Concepción",
+                                      "Servicio de Salud Talcahuano",
+                                      "Servicio de Salud Los Rios"))
+
+## Gráfico
+rim.plot <-  ggplot(plot1, 
+       aes(x = AÑO,                     ## eje x : variable AÑO
+           y = rim,                     ## eje y: varibale tasa
+           group = Servicio_salud,      ## agrupar por SS
+           color = Servicio_salud)) +   ## color segun SS
+  geom_smooth(method = "lm",
+              se = F,
+              linetype = "solid",
+              colour = "#8B8878",
+              alpha = 0.05,
+              linewidth = 0.6) +
+  geom_line() +                         ## Incidencia por año
+  geom_point() +                        ## Puntos rim
+  facet_wrap(~ Servicio_salud, 
+             scales = "free_y",
+             ncol = 1) +  # Un gráfico por SS
+  scale_x_continuous(breaks = unique(plot1$AÑO)) + 
+  theme_minimal() +
+  theme(legend.position = "none") +  ## Ocultar la leyenda 
+  labs(title = "Razón Incidencia/Mortalidad de GC por año en Servicios de Salud", 
+       x = "Año", 
+       y = "RIM") #+
+
+rim.plot
+
+# ggsave("rim_plot_2.jpeg", rim.plot, width = 8, height = 15, dpi = 300)
+```
+
+## 3.2 RIM AÑO, SS y tramo etario
+
+```{r eval = F, fig.width=8 ,fig.height= 10}
+## Graficar las RIM por año, SS y tramo etario
+
+plot2 <- rim %>%
+  
+  ## agrupar datos por SS, AÑO y QUINQUENIO
+  group_by(Servicio_salud, AÑO, QUINQUENIO) %>%
+  
+  ## resumir el conteo de incidencias y defunciones
+  summarise(
+    inc = sum(incidencias),
+    def = sum(Defunciones, 
+              na.rm = T) ## aquí hay valores NA por lo que deben ser removidos (para el gráfico)
+  ) %>%
+  
+  ## creacion de la variables RIM.2
+  mutate(RIM.2 = ifelse(def == 0,                         ## si las defunciones son 0
+                              NA,                         ## las reemplaza por un NA
+                              round(def / inc, 2))) %>%   ## en otro caso hace esta operacion. De esta forma se evita dividir por 0 cuando el grupo etario no tiene casos.
+  
+  ## filtar valores infinitos
+  filter(!is.infinite(RIM.2)) ## si aparece un infinito lo elimina
+
+
+## necesito graficar la rim por SS por año y quinquenio (en pizarra)
+## en el eje Y están las RIM; en el eje Y estan para cada año los quinquios y de eso es un gráfico por SS.
+
+## paleta de colores
+c25 <- c(
+  "blue1", "brown", "gray70", "green4", "#6A3D9A", "gold1", "skyblue2",  "steelblue4", "palegreen2", "#CAB2D6", "deeppink1", "#FDBF6F", "#E31A1C", "black", "maroon", "orchid1", "dodgerblue2", "#FB9A99", "#FF7F00", "darkturquoise", "green1", "yellow4", "yellow3", "darkorange4", "khaki2" )
+```
+
+```{r eval = F, fig.width=40 ,fig.height= 40}
+## Gráfico. Debe ser como un spaghetti plot para comparar, sino tabla como material suplementario
+plot2$AÑO <- as.factor(plot2$AÑO)
+
+rim.plot2 <- ggplot(plot2, # df de donde se obtienen los datos
+                    
+       aes(x = AÑO,                      # eje x : variable AÑO
+           y = RIM.2,                    # eje y: varibale tasa
+           fill = QUINQUENIO)) +         # color segun Servicio_salud
+  
+  geom_bar(stat = "identity",            # barra horizontal
+           position = position_dodge(width = 0.95)) +   # Línea de incidencia por año
+                          
+  
+  facet_wrap(~ Servicio_salud,           ## Un gráfico por servicio de salud
+             scales = "fixed",           ## Valores del eje y varien segun los valores de la variable
+             ncol = 1) +                 ## el wrap ordenado en una sola columna
+  
+  scale_fill_manual(values = c25) +      ## paleta de colores
+  
+  theme_minimal() +
+  
+  theme(legend.position = "bottom",
+        panel.grid.minor = element_blank(),
+    
+    # cambio de tamaños
+    plot.title = element_text(size = 30, face = "bold", hjust = 0.5), ## config del titulo
+    axis.title.x = element_text(size = 25),              ## config titulo eje X
+    axis.title.y = element_text(size = 25),              ## config titulo eje Y
+    axis.text.x = element_text(size = 20),               ## config texto eje X
+    axis.text.y = element_text(size = 20),               ## config texto eje Y
+    strip.text = element_text(size = 25),                ## config títulos de facetas
+    legend.text = element_text(size = 20),               ## config texto de la leyenda
+    legend.title = element_text(size = 20, face = "bold") ## config titulo de la leyenda
+  ) +  
+
+  
+  labs(title = "Razón Mortalidad /Incidencia de GC por quinquenios en Servicios de Salud", 
+       x = "Año", 
+       y = "RIM") +
+ 
+   guides(
+    fill = guide_legend(nrow = 2)           # Organizar la leyenda en 2 filas
+  )
+  
+rim.plot2
+
+# ggsave("rim_plot_2.jpeg",  rim.plot2,  width = 30,  height = 27, dpi = 300)
+```
+
+# 4. Ajuste de la RIM
+
+## Evaluacion dependencia temporal
+
+```{r}
+## datos de incidencias de cada SS por AÑO
+inc_matriz <- incidencias %>%
+  group_by(Servicio_salud, AÑO) %>%
+  summarise(incidencias = sum(incidencias), .groups = "drop") %>% 
+  mutate(AÑO_n = AÑO - min(AÑO) + 1) ## centrar el AÑO.
+```
+
+```{r}
+## Eval correlacion incidencia a nivel nacional
+inc_matriz_t <- inc_matriz %>% 
+  group_by(AÑO_n) %>% 
+  summarise(incidencias= sum(incidencias))
+
+lm_nac <- lm(incidencias ~ AÑO_n, data = inc_matriz_t)
+lmtest::dwtest(lm_nac)
+```
+
+```{r}
+## Eval correlacion incidencia a nivel SS
+inc_matriz %>%
+  group_by(Servicio_salud) %>%
+  group_modify(~ {
+    modelo <- lm(incidencias ~ AÑO_n, data = .x)
+    dw <- lmtest::dwtest(modelo)
+    
+    tibble(
+      DW = as.numeric(dw$statistic),
+      p_value = dw$p.value
+    )
+  })
+
+## hay evidencia de correlación en un subconjuto de SS. Sugiere considerar modelos con estructura de dependencia temporal.
+```
+
+```{r eval = F}
+## modelo de tendencia de incidencias por año en SS: 
+## indicencias_t = beta0 + beta1* año_t + e_t
+library(nlme)
+corr_1 <- nlme::gls(
+  model = incidencias ~ AÑO_n,
+  correlation = corAR1(form = ~AÑO_n | Servicio_salud) , ## correlacion AR(1), respecto a cada año.
+  data = inc_matriz,
+  weights = varIdent(form = ~1| AÑO_n), ## permitir variabilidad distinta entre años
+  na.action = na.omit ,
+)
+summary(corr_1)
+
+## salida 1:
+# Phi = 0.918: alta autocorrelación de valores de incidencia entre años dentro de cada Servicio_salud .
+# VarIdent: las desviaciones estándar por año varían bastante (valores muy pequeños para 2003–2002 y grandes en años recientes por pocos datos. hay heterocedasticidad, es practico para reflejar cambios en el registro.
+
+## para el m2 se puede considerar incroporar la estructura de correlación, AR(1). y manejar la heterocedasticidad por año con dispersión estructurada, dispformula = ~ AÑO
+
+## correlación -0.84 -> correlación negativa
+
+## salida 3:
+## coef AÑO_n = -1.246, tendencia temporal deciende y estadísticamente significativo. bajan 1.25 casos por año.
+## intercep: incidencia promedio año 2002 -> 74 casos
+```
+
+```{r}
+corr_2 <- glmmTMB(
+  incidencias ~ AÑO_n +
+    ar1(factor(AÑO_n) + 0 | Servicio_salud),   #correlación temporal AR(1) por SS
+  family = nbinom2,
+  data = inc_matriz
+)
+summary(corr_2)
+
+## Corr = 0.97
+## dispersión 98.6
+## coef año: exp(-0.01422) = 0.986 -> no sig
+```
+
+```{r}
+# Se evaluó la presencia de autocorrelación temporal mediante el estadístico de Durbin–Watson aplicado a modelos lineales ajustados por cada Servicio de Salud. Se observó evidencia de autocorrelación positiva significativa en los Servicios de Salud del Biobío y Los Ríos, así como autocorrelación negativa en el Servicio del Maule, mientras que los restantes servicios no presentaron dependencia serial significativa. Dado este patrón heterogéneo, se optó por incorporar una estructura de correlación AR(1) en los modelos mixtos para capturar adecuadamente la dependencia temporal promedio entre observaciones.
+```
+
+## Modelo con pendiente aleatoria por año
+
+```{r}
+datos.modelo <- left_join(incidencias,
+                          defunciones,    
+                          by = c("Servicio_salud",
+                               "SEXO",
+                               "AÑO",
+                               "QUINQUENIO")) %>% 
+  mutate(
+    SEXO = factor(SEXO),
+    QUINQUENIO = factor(QUINQUENIO),
+    Servicio_salud = factor(Servicio_salud) ) %>% 
+  
+  filter(!(QUINQUENIO %in% c("10-14", "0-4", "5-9", "15-19"))) %>% 
+
+  droplevels() %>% 
+  
+  mutate(defunciones = ifelse(is.na(defunciones), 1, defunciones)) %>% 
+  
+  mutate(AÑO_m = AÑO - min(AÑO) + 1)
+```
+
+```{r}
+m <- glmmTMB::glmmTMB(
+  formula = incidencias ~ offset(log(defunciones)) + SEXO + QUINQUENIO + AÑO_m +  ## variables modelo
+                  (1 + AÑO_m | Servicio_salud),                                    ## intercepto aleatorio y pendiente aleatoria
+    data = datos.modelo,                                                       ## datos
+    family = poisson(link = "log"),
+  
+  na.action = na.omit)
+
+summary(m)
+```
+
+#### Validación del modelo
+
+```{r}
+datos_v <- datos.modelo
+
+verif <- predict(m, 
+                   newdata = datos_v, 
+                   type = "link",                  ## escala logartimica
+                   se.fit = TRUE,                  ## obtener error estandar
+                   allow.new.levels = T)
+
+##############################################################
+
+datos_v <- datos_v %>% 
+  mutate(
+    
+    ## añadir estimaciones + error estandar
+    predicho_link = !!verif$fit,
+    se_link = !!verif$se.fit,
+    
+    ## calculo de limites de IC 95%
+    inf_limite_link = predicho_link - 1.96 * se_link,
+    sup_limite_link = predicho_link + 1.96 * se_link,
+    
+    ## llevar a escala de respuesta
+    predicho = exp(predicho_link),
+    
+    ## Método delta
+    se = predicho * se_link,
+     
+    ## IC 95%
+    inf_limite = exp(inf_limite_link),
+    sup_limite = exp(sup_limite_link),
+    tipo = "OBSERVADO",
+    
+    ## variable indicadora de si el IC construido contiene el valor observado
+    cobertura_ic = ifelse(incidencias >= inf_limite & incidencias <= sup_limite, 1, 0),
+    
+    ## residuos
+    residuos = incidencias - predicho,
+    residuos_pearson = (incidencias - predicho)/sqrt(predicho),
+    residuos.est = residuos_pearson / se,
+    error_porcentual = ((predicho - incidencias) / incidencias) * 100
+    )
+head(datos_v)
+```
+
+#### Errores modelo
+
+```{r}
+## errores del modelo 
+datos_v %>%
+  ungroup() %>% 
+  mutate(truth = incidencias,
+         estimate = predicho) %>%
+  yardstick::metrics(truth = truth,             
+          estimate = estimate)
+
+( mape <- mean(abs((datos_v$incidencias - datos_v$predicho) / datos_v$incidencias), na.rm = T) * 100 )
+( cobertura <- mean(datos_v$cobertura_ic, na.rm = T) *100 )
+## mape = 45.6%
+## cobertura = 25.2%
+```
+
+#### Cálculo prediccion anual SS
+
+```{r}
+## total casos predichos ss 
+casos_predichos_ss <- datos_v %>% 
+  ungroup() %>% 
+  group_by(Servicio_salud, AÑO) %>% 
+  summarise(total_casos = round(sum(predicho))) 
+casos_predichos_ss
+
+## total casos observados
+prop_año_ss <- datos.modelo %>% 
+  group_by(Servicio_salud, AÑO) %>% 
+  summarise(casos = sum(incidencias)) %>% 
+  left_join(casos_predichos_ss, by = c("Servicio_salud", "AÑO"))
+prop_año_ss %>% 
+  ungroup() %>% 
+  mutate(Servicio_salud = fct_relevel(Servicio_salud,
+                                      "Servicio de Salud Arica y Parinacota",
+                                      "Servicio de Salud Antofagasta",
+                                      "Servicio de Salud Del Maule",
+                                      "Servicio de Salud Biobío",
+                                      "Servicio de Salud Concepción",
+                                      "Servicio de Salud Talcahuano",
+                                      "Servicio de Salud Los Rios"))
+
+## MAPE a nivel de SS
+(mape2 <- mean(abs((prop_año_ss$casos - prop_año_ss$total_casos) / prop_año_ss$casos), na.rm = T) * 100)
+
+## sMAPE a nivel de SS
+( smape2 <- mean(2 * abs(prop_año_ss$casos - prop_año_ss$total_casos) / 
+                   (abs(prop_año_ss$casos) + abs(prop_año_ss$total_casos)), 
+                   na.rm = T) * 100 )
+```
+
+#### Gráfico predicciones del modelo
+
+```{r fig.width=12, fig.height=6}
+plot_ss <- ggplot(prop_año_ss, aes(x = as.numeric(as.character(AÑO)))) +
+  # Línea de Datos Reales (Negro)
+  geom_line(aes(y = casos, color = "Observado"), size = 1) +
+  geom_point(aes(y = casos, color = "Observado"), size = 1.5) +
+  
+  # Línea del Modelo (Rojo discontinuo)
+  geom_line(aes(y = total_casos, color = "Predicho"), linetype = "dashed", size = 1) +
+  
+  # Separar por Servicio
+  facet_wrap(~Servicio_salud, scales = "free_y") + 
+  
+  theme_minimal() +
+  labs(
+    title = "Validación Modelo: incidencia de cáncer gástrico por servicios de salud con RPC",
+    subtitle = "Comparación de Casos Totales Anuales",
+    x = "Año",
+    y = "Total de Casos",
+    color = "Incidencia",
+    caption = "Conjunto de datos: reemplazo de mortalidad 0 por 1.\nM: con pendiente aleatoria por AÑO"
+  ) +
+  theme(legend.position = "top")
+plot_ss
+
+# ggsave(filename = "rim_plot_3.jpeg", plot_ss, width = 12, height = 6)
+```
+
+#### Bondad de ajuste del modelo
+
+```{r}
+## evaluación de autocorrelacion entre residuos
+acf(residuals(m, type="pearson")) ## no hay autocorrelacion de los residuos
+
+## evaluación de sobredispersion
+performance::check_overdispersion(m) ## no hay sobredispersión
+
+## evaluación general del modelo
+performance::check_model(m)
+DHARMa::simulateResiduals(m, plot = T)
+res <- DHARMa::simulateResiduals(m) 
+
+DHARMa::testUniformity(res)                                     ## KS / uniformidad no se rechza H0
+DHARMa::testDispersion(res)                                     ## hay sub-dispersion
+
+# Residuales vs covariables clave
+DHARMa::plotResiduals(res, form = datos.modelo$SEXO)            
+DHARMa::plotResiduals(res, form = datos.modelo$QUINQUENIO) 
+```
+
+## Predicciones a partir del modelo
+
+```{r}
+## 1. set de datos con mortalidad a partir del cual predecir incidencias.
+data_pred <- anti_join(defunciones,
+                        incidencias,    
+                          by = c("Servicio_salud",
+                               "SEXO",
+                               "AÑO",
+                               "QUINQUENIO")) %>% 
+ ## formato factor
+  mutate(
+    SEXO = factor(SEXO),
+    QUINQUENIO = factor(QUINQUENIO),
+    Servicio_salud = factor(Servicio_salud) ) %>% 
+  
+  ## quitar quinquenios no empleados
+  filter(!(QUINQUENIO %in% c("10-14", "0-4", "5-9", "15-19")),
+         !is.na(defunciones)) %>% 
+
+  ## quitar niveles que no se usarán
+  droplevels() %>% 
+  
+  mutate(AÑO_m = AÑO - min(AÑO) + 1)
+
+
+## 2. estimación de incidencias con mortalidad
+predicciones <- predict(m,                      ## modelo
+                        newdata = data_pred,    ## df con nuevos datos (las predicciones)
+                        type = "link",          ## la variables respuesta
+                        allow.new.levels = T,   ## esto permite predecir para servicios no vistos
+                        se.fit = T)             ## obtener errores estándar
+
+
+## 3. añadir predicciones de incidencia al df de mortalidad
+
+data_pred <- data_pred %>% 
+  mutate(
+    
+    ## añadir estimaciones + error estandar
+    predicho_link = !!predicciones$fit,
+    se_link = !!predicciones$se.fit,
+    
+    ## IC 95% en escala logarítmica
+    inf_limite_link = predicho_link - 1.96 * se_link,
+    sup_limite_link = predicho_link + 1.96 * se_link,
+    
+    ## predichos a escala de respuesta
+    incidencia_predicho = exp(predicho_link),
+    
+    ## redondear a enteros
+    incidencias = round(incidencia_predicho),
+    
+    ## variable indicadora del tipo de incidencia.
+    tipo = "ESTIMADO",
+    
+    ## errores estandar a escala respuesta (Método delta)
+    se = incidencia_predicho * se_link,
+     
+    ## IC 95% en escala de respuesta
+    inf_limite = exp(inf_limite_link),
+    sup_limite = exp(sup_limite_link) )
+
+## 4. unir df de validacion con df de estimación.
+
+### 4.1 seleccion de variables
+
+## datos OBERVADOS
+datos_v_2 <- datos_v %>% 
+  dplyr::select(Servicio_salud, AÑO, SEXO, QUINQUENIO, incidencias, defunciones, tipo)
+
+## DATOS PREDICHOS DE VALIDACIÓN
+datos_pred_v2 <- datos_v %>% 
+  dplyr::select(Servicio_salud, AÑO, SEXO, QUINQUENIO, predicho, defunciones) %>% 
+  rename(incidencias = predicho) %>% 
+  mutate(tipo = "ESTIMADO",
+         incidencias = round(incidencias))
+
+## DATOS PREDICHOS 
+datos_pred_2 <- data_pred %>% 
+  dplyr::select(Servicio_salud, AÑO, SEXO, QUINQUENIO, incidencias, defunciones, tipo)
+
+estimacion_completa <- rbind(
+  datos_v_2, datos_pred_v2, datos_pred_2) %>% 
+  group_by(Servicio_salud, AÑO, tipo) %>% 
+  summarise(incidencias = sum(incidencias))
+
+```
+
+```{r fig.height= 30, fig.width= 35}
+estimacion_completa$tipo <- factor(
+  estimacion_completa$tipo,
+  levels = c("OBSERVADO", "ESTIMADO"))
+
+plot4 <- ggplot(estimacion_completa, aes(x = AÑO,
+                                 y = incidencias,
+                                 group = tipo,
+                                 color = tipo,
+                                 linetype = tipo))+
+  
+  geom_line(size = 1.2)+
+  
+  facet_wrap(~ Servicio_salud, ncol = 2, scales = "free_y") +
+  
+   scale_x_continuous(breaks = unique(estimacion_completa$AÑO)) +
+
+## etiquetas del: título, subtítulo, eje X y eje Y; incando los colores y tipo de linea
+  labs(title = "Incidencias observadas vs predichas",
+       subtitle = "Por Servicio de Salud y Año",
+       x = "Año",
+       y = "Casos nuevos de cáncer gástrico",
+       color = "Casos nuevos",         ## título de la leyenda
+       linetype = "Casos nuevos") +    ## lineas para cada
+  
+## tema del gráfico
+  theme_minimal(base_size = 14) +
+
+## especificaciones del tamaño de letra
+  theme(
+    strip.text = element_text(size = 20),                 
+    axis.text.x = element_text(size = 15, angle = 45, hjust = 1),
+    axis.text.y = element_text(size=15),
+    plot.title = element_text(size = 25, face = "bold"),
+    plot.subtitle = element_text(size = 20),
+    legend.text = element_text(size = 20),                 
+    legend.title = element_text(size = 22, face = "bold"),
+    axis.title = element_text(size = 20),
+    legend.position = "bottom"
+  )
+
+plot4
+
+# ggsave(filename = "rim_plot_4.jpeg", plot4)
+```
+
+```{r}
+## estimaciones a exportar:
+estimaciones_OE2 <- rbind(
+  datos_v_2, datos_pred_2
+)
+save(estimaciones_OE2, file = "estimaciones_OE2.RData")
+```

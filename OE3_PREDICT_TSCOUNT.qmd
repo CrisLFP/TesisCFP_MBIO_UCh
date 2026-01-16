@@ -1,0 +1,3672 @@
+---
+title: "OE3_PREDICT_TSCOUNT"
+author: "CFP"
+format: html
+editor: visual
+---
+
+```{r}
+gc()
+setwd("~/Desktop/U_CHILE/MG_BIOESTADÍSTICA/TESIS/DATOS PÚBLICOS/OE3")
+```
+
+# Librerias
+
+```{r}
+## librerias
+library(tidyverse)    ## adm de datos
+library(tscount)      ## series de tiempo de conteo
+library(glm2)         ## glm Poisson
+```
+
+# Crga de datos
+
+```{r}
+## 1. datos incidencias
+load("~/Desktop/U_CHILE/MG_BIOESTADÍSTICA/TESIS/DATOS PÚBLICOS/OE2/estimaciones_OE2.RData")   ## datos incidencias
+load("pob_total_quinquenios_ss.RData")   ## poblaciones
+
+## 2. datos pob quinquenio
+pob.quinquenio <- pob.quinquenio %>%
+  rename(SEXO = Sexo) %>% 
+  filter(!Quinquenios_edad %in% c("0-4", "5-9" ,"10-14", "15-19")) %>%
+  
+  ## recodificar sexo
+  mutate(SEXO = fct_recode(SEXO,
+    "Hombre" = "1",
+    "Mujer" = "2")) %>%
+  rename(QUINQUENIO = Quinquenios_edad) 
+
+## 3. unir df 1. y 2. 
+ datos.completos <- left_join(estimaciones_OE2, pob.quinquenio, by = c("Servicio_salud", "AÑO", "SEXO", "QUINQUENIO"))
+ 
+ ## 4. datos modelo PAC
+ load("casos_proyectados_PAC_MINSAL.RData")
+ casos_proyectados <- casos_proyectados %>% 
+   mutate(AÑO = as.character(AÑO),
+          AÑO = as.numeric(AÑO)) %>% 
+   filter(AÑO <= 2023)
+```
+
+Construir la serie con toda la información
+
+## datos ajuste
+
+```{r}
+ts_data <- datos.completos %>% 
+  group_by(Servicio_salud, AÑO) %>% 
+  summarise(incidencias = sum(incidencias),
+            POBLACION = sum(POBLACION),
+            off_set_pob = log (POBLACION))
+```
+
+## ACF y PACF
+
+```{r}
+niveles <- unique(ts_data$Servicio_salud)
+
+for (g in niveles) {
+  
+  datos_g <- ts_data %>%
+    filter(Servicio_salud == g) %>%
+    arrange(AÑO) %>%
+    pull(incidencias)
+  
+  par(mfrow = c(1, 2))
+  
+  acf(datos_g,
+      main = paste("ACF", g),
+      xlim = c(0,10), ylim = c(-0.5,1))
+  
+  pacf(datos_g,
+       main = paste("PACF", g),
+       xlim = c(1,9), ylim = c(-0.5,1))
+}
+
+## en diferentes servicios se detecta la presencia de correlación e incidencias por año
+```
+
+## 1. Antofagasta
+
+```{r}
+## set de datos
+ts1 <- ts_data %>% 
+  ## seleccionar los datos en estudio
+  filter(Servicio_salud == "Servicio de Salud Antofagasta")
+```
+
+```{r}
+m1 <- tscount::tsglm(
+  ts = ts1$incidencias,                               
+  model = list(past_obs = 3, past_mean = NULL),    ## AR3
+   distr = "poisson"                       
+)
+summary(m1)
+ts1$fitted <- round(fitted(m1), 0)
+
+ts1 <- ts1 %>% 
+  mutate(error = incidencias - fitted)
+
+(mape_ts1 <- mean(abs((ts1$incidencias - ts1$fitted) / ts1$incidencias), na.rm = T) * 100 )
+
+```
+
+#### Gráfico de residuos
+
+```{r}
+layout(t(matrix(c(1,1,1,1,2,2,3,3),ncol=2))) ## matriz para gráficos
+## residuos pearson
+plot(residuals(m1,type="pearson"), type="b", col=NULL, xlab="AÑO", ylab="Residuals", ylim=c(-3,7), pch=16, cex.lab=1.5, cex.axis=1.5)
+points(residuals(m1,type="pearson"),type="b")
+## funcion de autocorrelación
+acf(residuals(m1,type="pearson"))
+## funcion autocorrelacion parcial
+pacf(residuals(m1,type="pearson"))
+```
+
+```{r fig.width= 15, fig.height=7}
+## casos cancer obs
+plot(ts1$incidencias, type="b", col=NULL, xlab="AÑOS", ylab="Casos CG", pch=16, cex.lab=1.5, cex.axis=1.5)
+points(ts1$incidencias, type="b", col="black",pch=16)
+## casos cancer ajustados
+points(fitted(m1), type="b",col="orange",pch=16)
+```
+
+## Predicción
+
+```{r}
+pred <- predict(m1, n.ahead = 3)
+ultimo_año <- max(ts1$AÑO)
+
+# Años futuros
+años_predichos <- ultimo_año + seq_len(length(pred$pred))
+
+# Data frame de predicciones
+pred_df <- data.frame(
+  Servicio_salud = unique(ts1$Servicio_salud),
+  AÑO = años_predichos,
+  tipo = "PREDICHO_TS",
+  valor = round(pred$pred,0)
+)
+```
+
+```{r}
+n <- nrow(ts1)       # debería ser 18
+
+# Extraer las predicciones
+pred_y <- pred$pred  # vector de longitud 3
+pred_x <- (n+1):(n + length(pred_y))  # 19, 20, 21
+
+# Gráfico base (observados)
+plot(1:n, ts1$incidencias,
+     type = "b",
+     pch = 16,
+     col = "black",
+     xlim = c(1, n + length(pred_y)),   # ← esto permite mostrar hasta 21
+     ylim = c(0, max(c(ts1$incidencias, pred_y)) * 1.2),
+     xlab = "Tiempo",
+     ylab = "Casos",
+     main = "Observado, Ajustado y Predicción")
+
+# Ajustados (in-sample)
+points(1:n, fitted(m1),
+       type = "b",
+       col = "orange",
+       pch = 16)
+
+# Predicciones
+points(pred_x, pred_y,
+       type = "b",
+       col = "blue",
+       pch = 17)
+
+legend("topleft",
+       legend = c("Observado", "Ajustado", "Predicho"),
+       col = c("black", "orange", "blue"),
+       pch = c(16, 16, 17),
+       bty = "n")
+```
+
+### resumen de datos
+
+```{r}
+ts1_long <- ts1 %>% 
+  dplyr::select(Servicio_salud, AÑO, incidencias, fitted) %>% 
+  pivot_longer(
+    cols =c(incidencias, fitted),
+    names_to = "tipo",
+    values_to = "valor") %>%
+  mutate(
+    tipo = case_when(
+      tipo == "incidencias" ~ "OBSERVADO",
+      tipo == "fitted" ~ "AJUSTADO"
+    )
+  )
+
+ts1_long2 <- bind_rows(ts1_long, pred_df)
+```
+
+## 2. Los Ríos
+
+```{r}
+## set de datos
+ts2 <- ts_data %>% 
+  ## seleccionar los datos en estudio
+  filter(Servicio_salud == "Servicio de Salud Los Rios") 
+```
+
+```{r}
+## modelo de serie de conteo
+m2 <- tscount::tsglm(
+  ts = ts2$incidencias, 
+  model = list(past_obs= 1, past_mean = NULL),  
+   distr = "poisson")                          
+summary(m2)
+
+ts2$fitted <- round(fitted(m2), 0)
+
+ts2 <- ts2 %>% 
+  mutate(error = incidencias - fitted)
+
+(mape_ts2 <- mean(abs((ts2$incidencias - ts2$fitted) / ts2$incidencias), na.rm = T) * 100 )
+## existe la correlación no ajusta bien con el parámetro autorregresivo
+```
+
+#### Gráfico de residuos
+
+```{r}
+layout(t(matrix(c(1,1,1,1,2,2,3,3),ncol=2))) ## matriz para gráficos
+## residuos pearson
+plot(residuals(m2,type="pearson"), type="b", col=NULL, xlab="AÑO", ylab="Residuals", ylim=c(-3,7), pch=16, cex.lab=1.5, cex.axis=1.5)
+points(residuals(m2,type="pearson"),type="b")
+## funcion de autocorrelación
+acf(residuals(m2,type="pearson"))
+## funcion autocorrelacion parcial
+pacf(residuals(m2,type="pearson"))
+```
+
+```{r fig.width= 15, fig.height=7}
+plot(ts2$incidencias, type="b", col=NULL, xlab="AÑOS", ylab="Casos CG", pch=16, cex.lab=1.5, cex.axis=1.5)
+points(ts2$incidencias, type="b", col="black",pch=16)
+
+## casos cancer ajustados
+points(fitted(m2), type="b",col="orange",pch=16)
+## esta estimando bine la dinámica temporal, pero lo hace desplazada en un tiempo.
+```
+
+## Predicción
+
+```{r}
+pred <- predict(m2, n.ahead = 3)
+ultimo_año <- max(ts2$AÑO)
+
+# Años futuros
+años_predichos <- ultimo_año + seq_len(length(pred$pred))
+
+# Data frame de predicciones
+pred_df <- data.frame(
+  Servicio_salud = unique(ts2$Servicio_salud),
+  AÑO = años_predichos,
+  tipo = "PREDICHO_TS",
+  valor = round(pred$pred,0)
+)
+```
+
+```{r}
+n <- nrow(ts2)       # debería ser 18
+
+# Extraer las predicciones
+pred_y <- pred$pred  # vector de longitud 3
+pred_x <- (n+1):(n + length(pred_y))  # 19, 20, 21
+
+# Gráfico base (observados)
+plot(1:n, ts2$incidencias,
+     type = "b",
+     pch = 16,
+     col = "black",
+     xlim = c(1, n + length(pred_y)),   # ← esto permite mostrar hasta 21
+     ylim = c(0, max(c(ts2$incidencias, pred_y)) * 1.2),
+     xlab = "Tiempo",
+     ylab = "Casos",
+     main = "Observado, Ajustado y Predicción")
+
+# Ajustados (in-sample)
+points(1:n, fitted(m2),
+       type = "b",
+       col = "orange",
+       pch = 16)
+
+# Predicciones
+points(pred_x, pred_y,
+       type = "b",
+       col = "blue",
+       pch = 17)
+
+legend("topleft",
+       legend = c("Observado", "Ajustado", "Predicho"),
+       col = c("black", "orange", "blue"),
+       pch = c(16, 16, 17),
+       bty = "n")
+```
+
+### resumen de datos
+
+```{r}
+ts2_long <- ts2 %>% 
+  dplyr::select(Servicio_salud, AÑO, incidencias, fitted) %>% 
+  pivot_longer(
+    cols =c(incidencias, fitted),
+    names_to = "tipo",
+    values_to = "valor") %>%
+  mutate(
+    tipo = case_when(
+      tipo == "incidencias" ~ "OBSERVADO",
+      tipo == "fitted" ~ "AJUSTADO"
+    )
+  )
+
+ts2_long2 <- bind_rows(ts2_long, pred_df)
+```
+
+## 3. Arica
+
+```{r}
+## set de datos
+ts3 <- ts_data %>% 
+  filter(Servicio_salud == "Servicio de Salud Arica y Parinacota")
+```
+
+```{r}
+m3 <- tscount::tsglm(
+  ts = ts3$incidencias,                       
+  model = list(past_obs = NULL),              
+   distr = "poisson"                          )
+summary(m3)
+
+ts3$fitted <- round(fitted(m3), 0)
+
+ts3 <- ts3 %>% 
+  mutate(error = incidencias - fitted)
+
+(mape_ts3 <- mean(abs((ts3$incidencias - ts3$fitted) / ts3$incidencias), na.rm = T) * 100 )
+```
+
+#### Gráfico de residuos
+
+```{r}
+layout(t(matrix(c(1,1,1,1,2,2,3,3),ncol=2))) ## matriz para gráficos
+## residuos pearson
+plot(residuals(m3,type="pearson"), type="b", col=NULL, xlab="AÑO", ylab="Residuals", ylim=c(-3,7), pch=16, cex.lab=1.5, cex.axis=1.5)
+points(residuals(m3,type="pearson"),type="b")
+## funcion de autocorrelación
+acf(residuals(m3,type="pearson"))
+## funcion autocorrelacion parcial
+pacf(residuals(m3,type="pearson"))
+```
+
+```{r fig.width= 15, fig.height=7}
+## casos cancer obs
+plot(ts3$incidencias, type="b", col=NULL, xlab="AÑOS", ylab="Casos CG", pch=16, cex.lab=1.5, cex.axis=1.5)
+points(ts3$incidencias, type="b", col="black",pch=16)
+## casos cancer ajustados
+points(fitted(m3), type="b",col="orange",pch=16)
+```
+
+## Predicción
+
+```{r}
+pred <- predict(m3, n.ahead = 3)
+ultimo_año <- max(ts3$AÑO)
+
+# Años futuros
+años_predichos <- ultimo_año + seq_len(length(pred$pred))
+
+# Data frame de predicciones
+pred_df <- data.frame(
+  Servicio_salud = unique(ts3$Servicio_salud),
+  AÑO = años_predichos,
+  tipo = "PREDICHO_TS",
+  valor = round(pred$pred,0)
+)
+```
+
+```{r}
+n <- nrow(ts3)       # debería ser 18
+
+# Extraer las predicciones
+pred_y <- pred$pred  # vector de longitud 3
+pred_x <- (n+1):(n + length(pred_y))  # 19, 20, 21
+
+# Gráfico base (observados)
+plot(1:n, ts3$incidencias,
+     type = "b",
+     pch = 16,
+     col = "black",
+     xlim = c(1, n + length(pred_y)),   # ← esto permite mostrar hasta 21
+     ylim = c(0, max(c(ts3$incidencias, pred_y)) * 1.2),
+     xlab = "Tiempo",
+     ylab = "Casos",
+     main = "Observado, Ajustado y Predicción")
+
+# Ajustados (in-sample)
+points(1:n, fitted(m3),
+       type = "b",
+       col = "orange",
+       pch = 16)
+
+# Predicciones
+points(pred_x, pred_y,
+       type = "b",
+       col = "blue",
+       pch = 17)
+
+legend("topleft",
+       legend = c("Observado", "Ajustado", "Predicho"),
+       col = c("black", "orange", "blue"),
+       pch = c(16, 16, 17),
+       bty = "n")
+```
+
+### resumen de datos
+
+```{r}
+ts3_long <- ts3 %>% 
+  dplyr::select(Servicio_salud, AÑO, incidencias, fitted) %>% 
+  pivot_longer(
+    cols =c(incidencias, fitted),
+    names_to = "tipo",
+    values_to = "valor") %>%
+  mutate(
+    tipo = case_when(
+      tipo == "incidencias" ~ "OBSERVADO",
+      tipo == "fitted" ~ "AJUSTADO"
+    )
+  )
+
+ts3_long2 <- bind_rows(ts3_long, pred_df)
+```
+
+## 4. biobio
+
+```{r}
+## set de datos
+ts4 <- ts_data %>% 
+  filter(Servicio_salud == "Servicio de Salud Biobío")
+```
+
+```{r}
+m4 <- tscount::tsglm(
+  ts = ts4$incidencias,                       
+  model = list(past_obs = NULL),              
+   distr = "poisson")
+summary(m4)
+
+ts4$fitted <- round(fitted(m4), 0)
+
+ts4 <- ts4 %>% 
+  mutate(error = incidencias - fitted)
+
+(mape_ts4 <- mean(abs((ts4$incidencias - ts4$fitted) / ts4$incidencias), na.rm = T) * 100 )
+
+```
+
+#### Gráfico de residuos
+
+```{r}
+layout(t(matrix(c(1,1,1,1,2,2,3,3),ncol=2))) ## matriz para gráficos
+## residuos pearson
+plot(residuals(m4,type="pearson"), type="b", col=NULL, xlab="AÑO", ylab="Residuals", ylim=c(-3,7), pch=16, cex.lab=1.5, cex.axis=1.5)
+points(residuals(m4,type="pearson"),type="b")
+## funcion de autocorrelación
+acf(residuals(m4,type="pearson"))
+## funcion autocorrelacion parcial
+pacf(residuals(m4,type="pearson"))
+```
+
+```{r fig.width= 15, fig.height=7}
+## casos cancer obs
+plot(ts4$incidencias, type="b", col=NULL, xlab="AÑOS", ylab="Casos CG", pch=16, cex.lab=1.5, cex.axis=1.5)
+points(ts4$incidencias, type="b", col="black",pch=16)
+## casos cancer ajustados
+points(fitted(m4), type="b",col="orange",pch=16)
+```
+
+## Predicción
+
+```{r}
+pred <- predict(m4, n.ahead = 3)
+ultimo_año <- max(ts4$AÑO)
+
+# Años futuros
+años_predichos <- ultimo_año + seq_len(length(pred$pred))
+
+# Data frame de predicciones
+pred_df <- data.frame(
+  Servicio_salud = unique(ts4$Servicio_salud),
+  AÑO = años_predichos,
+  tipo = "PREDICHO_TS",
+  valor = round(pred$pred,0)
+)
+```
+
+```{r}
+n <- nrow(ts4)       # debería ser 18
+
+# Extraer las predicciones
+pred_y <- pred$pred  # vector de longitud 3
+pred_x <- (n+1):(n + length(pred_y))  # 19, 20, 21
+
+# Gráfico base (observados)
+plot(1:n, ts4$incidencias,
+     type = "b",
+     pch = 16,
+     col = "black",
+     xlim = c(1, n + length(pred_y)),   # ← esto permite mostrar hasta 21
+     ylim = c(0, max(c(ts4$incidencias, pred_y)) * 1.2),
+     xlab = "Tiempo",
+     ylab = "Casos",
+     main = "Observado, Ajustado y Predicción")
+
+# Ajustados (in-sample)
+points(1:n, fitted(m4),
+       type = "b",
+       col = "orange",
+       pch = 16)
+
+# Predicciones
+points(pred_x, pred_y,
+       type = "b",
+       col = "blue",
+       pch = 17)
+
+legend("topleft",
+       legend = c("Observado", "Ajustado", "Predicho"),
+       col = c("black", "orange", "blue"),
+       pch = c(16, 16, 17),
+       bty = "n")
+```
+
+### resumen de datos
+
+```{r}
+ts4_long <- ts4 %>% 
+  dplyr::select(Servicio_salud, AÑO, incidencias, fitted) %>% 
+  pivot_longer(
+    cols =c(incidencias, fitted),
+    names_to = "tipo",
+    values_to = "valor") %>%
+  mutate(
+    tipo = case_when(
+      tipo == "incidencias" ~ "OBSERVADO",
+      tipo == "fitted" ~ "AJUSTADO"
+    )
+  )
+
+ts4_long2 <- bind_rows(ts4_long, pred_df)
+```
+
+## 5. Concepción
+
+```{r}
+## set de datos
+ts5 <- ts_data %>% 
+  filter(Servicio_salud == "Servicio de Salud Concepción")
+plot(x= ts5$incidencias)
+```
+
+```{r}
+m5 <- tscount::tsglm(
+  ts = ts5$incidencias,                       
+  model = list(past_obs = c(1)),              
+   distr = "poisson")
+summary(m5)
+ts5$fitted <- round(fitted(m5), 0)
+
+ts5 <- ts5 %>% 
+  mutate(error = incidencias - fitted)
+
+(mape_ts5 <- mean(abs((ts5$incidencias - ts5$fitted) / ts5$incidencias), na.rm = T) * 100 )
+
+```
+
+#### Gráfico de residuos
+
+```{r}
+layout(t(matrix(c(1,1,1,1,2,2,3,3),ncol=2))) ## matriz para gráficos
+## residuos pearson
+plot(residuals(m5,type="pearson"), type="b", col=NULL, xlab="AÑO", ylab="Residuals", ylim=c(-3,7), pch=16, cex.lab=1.5, cex.axis=1.5)
+points(residuals(m5,type="pearson"),type="b")
+## funcion de autocorrelación
+acf(residuals(m5,type="pearson"))
+## funcion autocorrelacion parcial
+pacf(residuals(m5,type="pearson"))
+```
+
+```{r fig.width= 15, fig.height=7}
+## casos cancer obs
+plot(ts5$incidencias, type="b", col=NULL, xlab="AÑOS", ylab="Casos CG", pch=16, cex.lab=1.5, cex.axis=1.5)
+points(ts5$incidencias, type="b", col="black",pch=16)
+## casos cancer ajustados
+points(fitted(m5), type="b",col="orange",pch=16)
+```
+
+## Predicción
+
+```{r}
+pred <- predict(m5, n.ahead = 3)
+ultimo_año <- max(ts5$AÑO)
+
+# Años futuros
+años_predichos <- ultimo_año + seq_len(length(pred$pred))
+
+# Data frame de predicciones
+pred_df <- data.frame(
+  Servicio_salud = unique(ts5$Servicio_salud),
+  AÑO = años_predichos,
+  tipo = "PREDICHO_TS",
+  valor = round(pred$pred,0)
+)
+```
+
+```{r}
+n <- nrow(ts5)       # debería ser 18
+
+# Extraer las predicciones
+pred_y <- pred$pred  # vector de longitud 3
+pred_x <- (n+1):(n + length(pred_y))  # 19, 20, 21
+
+# Gráfico base (observados)
+plot(1:n, ts5$incidencias,
+     type = "b",
+     pch = 16,
+     col = "black",
+     xlim = c(1, n + length(pred_y)),   # ← esto permite mostrar hasta 21
+     ylim = c(0, max(c(ts5$incidencias, pred_y)) * 1.2),
+     xlab = "Tiempo",
+     ylab = "Casos",
+     main = "Observado, Ajustado y Predicción")
+
+# Ajustados (in-sample)
+points(1:n, fitted(m5),
+       type = "b",
+       col = "orange",
+       pch = 16)
+
+# Predicciones
+points(pred_x, pred_y,
+       type = "b",
+       col = "blue",
+       pch = 17)
+
+legend("topleft",
+       legend = c("Observado", "Ajustado", "Predicho"),
+       col = c("black", "orange", "blue"),
+       pch = c(16, 16, 17),
+       bty = "n")
+```
+
+### resumen de datos
+
+```{r}
+ts5_long <- ts5 %>% 
+  dplyr::select(Servicio_salud, AÑO, incidencias, fitted) %>% 
+  pivot_longer(
+    cols =c(incidencias, fitted),
+    names_to = "tipo",
+    values_to = "valor") %>%
+  mutate(
+    tipo = case_when(
+      tipo == "incidencias" ~ "OBSERVADO",
+      tipo == "fitted" ~ "AJUSTADO"
+    )
+  )
+
+ts5_long2 <- bind_rows(ts5_long, pred_df)
+```
+
+## 6. Maule
+
+```{r}
+## set de datos
+ts6 <- ts_data %>% 
+  filter(Servicio_salud == "Servicio de Salud Del Maule")
+plot(x= ts6$incidencias)
+```
+
+```{r}
+m6 <- tscount::tsglm(
+  ts = ts6$incidencias,                       
+  model = list(past_obs = NULL),              
+  distr = "poisson")
+summary(m6)
+
+ts6$fitted <- round(fitted(m6), 0)
+
+ts6 <- ts6 %>% 
+  mutate(error = incidencias - fitted)
+
+(mape_ts6 <- mean(abs((ts6$incidencias - ts6$fitted) / ts6$incidencias), na.rm = T) * 100 )
+
+```
+
+#### Gráfico de residuos
+
+```{r}
+layout(t(matrix(c(1,1,1,1,2,2,3,3),ncol=2))) ## matriz para gráficos
+## residuos pearson
+plot(residuals(m6,type="pearson"), type="b", col=NULL, xlab="AÑO", ylab="Residuals", ylim=c(-3,7), pch=16, cex.lab=1.5, cex.axis=1.5)
+points(residuals(m6,type="pearson"),type="b")
+## funcion de autocorrelación
+acf(residuals(m6,type="pearson"))
+## funcion autocorrelacion parcial
+pacf(residuals(m6,type="pearson"))
+```
+
+```{r fig.width= 15, fig.height=7}
+## casos cancer obs
+plot(ts6$incidencias, type="b", col=NULL, xlab="AÑOS", ylab="Casos CG", pch=16, cex.lab=1.5, cex.axis=1.5)
+points(ts6$incidencias, type="b", col="black",pch=16)
+## casos cancer ajustados
+points(fitted(m6), type="b",col="orange",pch=16)
+```
+
+## Predicción
+
+```{r}
+pred <- predict(m6, n.ahead = 3)
+ultimo_año <- max(ts6$AÑO)
+
+# Años futuros
+años_predichos <- ultimo_año + seq_len(length(pred$pred))
+
+# Data frame de predicciones
+pred_df <- data.frame(
+  Servicio_salud = unique(ts6$Servicio_salud),
+  AÑO = años_predichos,
+  tipo = "PREDICHO_TS",
+  valor = round(pred$pred,0)
+)
+```
+
+```{r}
+n <- nrow(ts6)       # debería ser 18
+
+# Extraer las predicciones
+pred_y <- pred$pred  # vector de longitud 3
+pred_x <- (n+1):(n + length(pred_y))  # 19, 20, 21
+
+# Gráfico base (observados)
+plot(1:n, ts6$incidencias,
+     type = "b",
+     pch = 16,
+     col = "black",
+     xlim = c(1, n + length(pred_y)),   # ← esto permite mostrar hasta 21
+     ylim = c(0, max(c(ts6$incidencias, pred_y)) * 1.2),
+     xlab = "Tiempo",
+     ylab = "Casos",
+     main = "Observado, Ajustado y Predicción")
+
+# Ajustados (in-sample)
+points(1:n, fitted(m6),
+       type = "b",
+       col = "orange",
+       pch = 16)
+
+# Predicciones
+points(pred_x, pred_y,
+       type = "b",
+       col = "blue",
+       pch = 17)
+
+legend("topleft",
+       legend = c("Observado", "Ajustado", "Predicho"),
+       col = c("black", "orange", "blue"),
+       pch = c(16, 16, 17),
+       bty = "n")
+```
+
+### resumen de datos
+
+```{r}
+ts6_long <- ts6 %>% 
+  dplyr::select(Servicio_salud, AÑO, incidencias, fitted) %>% 
+  pivot_longer(
+    cols =c(incidencias, fitted),
+    names_to = "tipo",
+    values_to = "valor") %>%
+  mutate(
+    tipo = case_when(
+      tipo == "incidencias" ~ "OBSERVADO",
+      tipo == "fitted" ~ "AJUSTADO"
+    )
+  )
+
+ts6_long2 <- bind_rows(ts6_long, pred_df)
+```
+
+## 7. Talcahuano
+
+```{r}
+## set de datos
+ts7 <- ts_data %>% 
+  filter(Servicio_salud == "Servicio de Salud Talcahuano")
+plot(x= ts7$incidencias)
+```
+
+```{r}
+m7 <- tscount::tsglm(
+  ts = ts7$incidencias,                       
+  model = list(past_obs = 4),              
+  distr = "poisson")
+summary(m7)
+
+ts7$fitted <- round(fitted(m7), 0)
+
+ts7 <- ts7 %>% 
+  mutate(error = incidencias - fitted)
+
+(mape_ts7 <- mean(abs((ts7$incidencias - ts7$fitted) / ts7$incidencias), na.rm = T) * 100 )
+
+```
+
+#### Gráfico de residuos
+
+```{r}
+layout(t(matrix(c(1,1,1,1,2,2,3,3),ncol=2))) ## matriz para gráficos
+## residuos pearson
+plot(residuals(m7,type="pearson"), type="b", col=NULL, xlab="AÑO", ylab="Residuals", ylim=c(-3,7), pch=16, cex.lab=1.5, cex.axis=1.5)
+points(residuals(m7,type="pearson"),type="b")
+## funcion de autocorrelación
+acf(residuals(m7,type="pearson"))
+## funcion autocorrelacion parcial
+pacf(residuals(m7,type="pearson"))
+```
+
+```{r fig.width= 15, fig.height=7}
+## casos cancer obs
+plot(ts7$incidencias, type="b", col=NULL, xlab="AÑOS", ylab="Casos CG", pch=16, cex.lab=1.5, cex.axis=1.5)
+points(ts7$incidencias, type="b", col="black",pch=16)
+## casos cancer ajustados
+points(fitted(m7), type="b",col="orange",pch=16)
+```
+
+## Predicción
+
+```{r}
+pred <- predict(m7, n.ahead = 3)
+ultimo_año <- max(ts7$AÑO)
+
+# Años futuros
+años_predichos <- ultimo_año + seq_len(length(pred$pred))
+
+# Data frame de predicciones
+pred_df <- data.frame(
+  Servicio_salud = unique(ts7$Servicio_salud),
+  AÑO = años_predichos,
+  tipo = "PREDICHO_TS",
+  valor = round(pred$pred,0)
+)
+```
+
+```{r}
+n <- nrow(ts7)       # debería ser 18
+
+# Extraer las predicciones
+pred_y <- pred$pred  # vector de longitud 3
+pred_x <- (n+1):(n + length(pred_y))  # 19, 20, 21
+
+# Gráfico base (observados)
+plot(1:n, ts7$incidencias,
+     type = "b",
+     pch = 16,
+     col = "black",
+     xlim = c(1, n + length(pred_y)),   # ← esto permite mostrar hasta 21
+     ylim = c(0, max(c(ts7$incidencias, pred_y)) * 1.2),
+     xlab = "Tiempo",
+     ylab = "Casos",
+     main = "Observado, Ajustado y Predicción")
+
+# Ajustados (in-sample)
+points(1:n, fitted(m7),
+       type = "b",
+       col = "orange",
+       pch = 16)
+
+# Predicciones
+points(pred_x, pred_y,
+       type = "b",
+       col = "blue",
+       pch = 17)
+
+legend("topleft",
+       legend = c("Observado", "Ajustado", "Predicho"),
+       col = c("black", "orange", "blue"),
+       pch = c(16, 16, 17),
+       bty = "n")
+```
+
+### resumen de datos
+
+```{r}
+ts7_long <- ts7 %>% 
+  dplyr::select(Servicio_salud, AÑO, incidencias, fitted) %>% 
+  pivot_longer(
+    cols =c(incidencias, fitted),
+    names_to = "tipo",
+    values_to = "valor") %>%
+  mutate(
+    tipo = case_when(
+      tipo == "incidencias" ~ "OBSERVADO",
+      tipo == "fitted" ~ "AJUSTADO"
+    )
+  )
+
+ts7_long2 <- bind_rows(ts7_long, pred_df)
+```
+
+## 8. Aconcagua
+
+```{r}
+## set de datos
+ts8 <- ts_data %>% 
+  filter(Servicio_salud == "Servicio de Salud Aconcagua")
+plot(x= ts8$incidencias)
+```
+
+```{r}
+m8 <- tscount::tsglm(
+  ts = ts8$incidencias,                       
+  model = list(past_obs = NULL),              
+  distr = "poisson")
+summary(m8)
+
+ts8$fitted <- round(fitted(m8), 0)
+
+ts8 <- ts8 %>% 
+  mutate(error = incidencias - fitted)
+
+(mape_ts8 <- mean(abs((ts8$incidencias - ts8$fitted) / ts8$incidencias), na.rm = T) * 100 )
+
+```
+
+#### Gráfico de residuos
+
+```{r}
+layout(t(matrix(c(1,1,1,1,2,2,3,3),ncol=2))) ## matriz para gráficos
+## residuos pearson
+plot(residuals(m8,type="pearson"), type="b", col=NULL, xlab="AÑO", ylab="Residuals", ylim=c(-3,7), pch=16, cex.lab=1.5, cex.axis=1.5)
+points(residuals(m8,type="pearson"),type="b")
+## funcion de autocorrelación
+acf(residuals(m8,type="pearson"))
+## funcion autocorrelacion parcial
+pacf(residuals(m8,type="pearson"))
+```
+
+```{r fig.width= 15, fig.height=7}
+## casos cancer obs
+plot(ts8$incidencias, type="b", col=NULL, xlab="AÑOS", ylab="Casos CG", pch=16, cex.lab=1.5, cex.axis=1.5)
+points(ts8$incidencias, type="b", col="black",pch=16)
+## casos cancer ajustados
+points(fitted(m8), type="b",col="orange",pch=16)
+```
+
+## Predicción
+
+```{r}
+pred <- predict(m8, n.ahead = 3)
+ultimo_año <- max(ts8$AÑO)
+
+# Años futuros
+años_predichos <- ultimo_año + seq_len(length(pred$pred))
+
+# Data frame de predicciones
+pred_df <- data.frame(
+  Servicio_salud = unique(ts8$Servicio_salud),
+  AÑO = años_predichos,
+  tipo = "PREDICHO_TS",
+  valor = round(pred$pred,0)
+)
+```
+
+```{r}
+n <- nrow(ts8)       # debería ser 18
+
+# Extraer las predicciones
+pred_y <- pred$pred  # vector de longitud 3
+pred_x <- (n+1):(n + length(pred_y))  # 19, 20, 21
+
+# Gráfico base (observados)
+plot(1:n, ts8$incidencias,
+     type = "b",
+     pch = 16,
+     col = "black",
+     xlim = c(1, n + length(pred_y)),   # ← esto permite mostrar hasta 21
+     ylim = c(0, max(c(ts8$incidencias, pred_y)) * 1.2),
+     xlab = "Tiempo",
+     ylab = "Casos",
+     main = "Observado, Ajustado y Predicción")
+
+# Ajustados (in-sample)
+points(1:n, fitted(m8),
+       type = "b",
+       col = "orange",
+       pch = 16)
+
+# Predicciones
+points(pred_x, pred_y,
+       type = "b",
+       col = "blue",
+       pch = 17)
+
+legend("topleft",
+       legend = c("Observado", "Ajustado", "Predicho"),
+       col = c("black", "orange", "blue"),
+       pch = c(16, 16, 17),
+       bty = "n")
+```
+
+### resumen de datos
+
+```{r}
+ts8_long <- ts8 %>% 
+  dplyr::select(Servicio_salud, AÑO, incidencias, fitted) %>% 
+  pivot_longer(
+    cols =c(incidencias, fitted),
+    names_to = "tipo",
+    values_to = "valor") %>%
+  mutate(
+    tipo = case_when(
+      tipo == "incidencias" ~ "OBSERVADO",
+      tipo == "fitted" ~ "AJUSTADO"
+    )
+  )
+
+ts8_long2 <- bind_rows(ts8_long, pred_df)
+```
+
+## 9. Araucanía norte
+
+```{r}
+## set de datos
+ts9 <- ts_data %>% 
+  filter(Servicio_salud == "Servicio de Salud Araucanía Norte")
+plot(x= ts9$incidencias)
+```
+
+```{r}
+m9 <- tscount::tsglm(
+  ts = ts9$incidencias,                       
+  model = list(past_obs = NULL),              
+  distr = "poisson")
+summary(m9)
+
+ts9$fitted <- round(fitted(m9), 0)
+
+ts9 <- ts9 %>% 
+  mutate(error = incidencias - fitted)
+
+(mape_ts9 <- mean(abs((ts9$incidencias - ts9$fitted) / ts9$incidencias), na.rm = T) * 100 )
+
+```
+
+#### Gráfico de residuos
+
+```{r}
+layout(t(matrix(c(1,1,1,1,2,2,3,3),ncol=2))) ## matriz para gráficos
+## residuos pearson
+plot(residuals(m9,type="pearson"), type="b", col=NULL, xlab="AÑO", ylab="Residuals", ylim=c(-3,7), pch=16, cex.lab=1.5, cex.axis=1.5)
+points(residuals(m9,type="pearson"),type="b")
+## funcion de autocorrelación
+acf(residuals(m9,type="pearson"))
+## funcion autocorrelacion parcial
+pacf(residuals(m9,type="pearson"))
+```
+
+```{r fig.width= 15, fig.height=7}
+## casos cancer obs
+plot(ts9$incidencias, type="b", col=NULL, xlab="AÑOS", ylab="Casos CG", pch=16, cex.lab=1.5, cex.axis=1.5)
+points(ts9$incidencias, type="b", col="black",pch=16)
+## casos cancer ajustados
+points(fitted(m9), type="b",col="orange",pch=16)
+```
+
+## Predicción
+
+```{r}
+pred <- predict(m9, n.ahead = 3)
+ultimo_año <- max(ts9$AÑO)
+
+# Años futuros
+años_predichos <- ultimo_año + seq_len(length(pred$pred))
+
+# Data frame de predicciones
+pred_df <- data.frame(
+  Servicio_salud = unique(ts9$Servicio_salud),
+  AÑO = años_predichos,
+  tipo = "PREDICHO_TS",
+  valor = round(pred$pred,0)
+)
+```
+
+```{r}
+n <- nrow(ts9)       # debería ser 18
+
+# Extraer las predicciones
+pred_y <- pred$pred  # vector de longitud 3
+pred_x <- (n+1):(n + length(pred_y))  # 19, 20, 21
+
+# Gráfico base (observados)
+plot(1:n, ts9$incidencias,
+     type = "b",
+     pch = 16,
+     col = "black",
+     xlim = c(1, n + length(pred_y)),   # ← esto permite mostrar hasta 21
+     ylim = c(0, max(c(ts9$incidencias, pred_y)) * 1.2),
+     xlab = "Tiempo",
+     ylab = "Casos",
+     main = "Observado, Ajustado y Predicción")
+
+# Ajustados (in-sample)
+points(1:n, fitted(m9),
+       type = "b",
+       col = "orange",
+       pch = 16)
+
+# Predicciones
+points(pred_x, pred_y,
+       type = "b",
+       col = "blue",
+       pch = 17)
+
+legend("topleft",
+       legend = c("Observado", "Ajustado", "Predicho"),
+       col = c("black", "orange", "blue"),
+       pch = c(16, 16, 17),
+       bty = "n")
+```
+
+### resumen de datos
+
+```{r}
+ts9_long <- ts9 %>% 
+  dplyr::select(Servicio_salud, AÑO, incidencias, fitted) %>% 
+  pivot_longer(
+    cols =c(incidencias, fitted),
+    names_to = "tipo",
+    values_to = "valor") %>%
+  mutate(
+    tipo = case_when(
+      tipo == "incidencias" ~ "OBSERVADO",
+      tipo == "fitted" ~ "AJUSTADO"
+    )
+  )
+
+ts9_long2 <- bind_rows(ts9_long, pred_df)
+```
+
+## 10. Araucanía sur
+
+```{r}
+## set de datos
+ts10 <- ts_data %>% 
+  filter(Servicio_salud == "Servicio de Salud Araucanía Sur")
+plot(x= ts10$incidencias)
+```
+
+```{r}
+m10 <- tscount::tsglm(
+  ts = ts10$incidencias,                       
+  model = list(past_obs = c(1)),              
+  distr = "poisson")
+summary(m10)
+
+ts10$fitted <- round(fitted(m10), 0)
+
+ts10 <- ts10 %>% 
+  mutate(error = incidencias - fitted)
+
+(mape_ts10 <- mean(abs((ts10$incidencias - ts10$fitted) / ts10$incidencias), na.rm = T) * 100 )
+
+```
+
+#### Gráfico de residuos
+
+```{r}
+layout(t(matrix(c(1,1,1,1,2,2,3,3),ncol=2))) ## matriz para gráficos
+## residuos pearson
+plot(residuals(m10,type="pearson"), type="b", col=NULL, xlab="AÑO", ylab="Residuals", ylim=c(-3,7), pch=16, cex.lab=1.5, cex.axis=1.5)
+points(residuals(m10,type="pearson"),type="b")
+## funcion de autocorrelación
+acf(residuals(m10,type="pearson"))
+## funcion autocorrelacion parcial
+pacf(residuals(m10,type="pearson"))
+```
+
+```{r fig.width= 15, fig.height=7}
+## casos cancer obs
+plot(ts10$incidencias, type="b", col=NULL, xlab="AÑOS", ylab="Casos CG", pch=16, cex.lab=1.5, cex.axis=1.5)
+points(ts10$incidencias, type="b", col="black",pch=16)
+## casos cancer ajustados
+points(fitted(m10), type="b",col="orange",pch=16)
+```
+
+## Predicción
+
+```{r}
+pred <- predict(m10, n.ahead = 3)
+ultimo_año <- max(ts10$AÑO)
+
+# Años futuros
+años_predichos <- ultimo_año + seq_len(length(pred$pred))
+
+# Data frame de predicciones
+pred_df <- data.frame(
+  Servicio_salud = unique(ts10$Servicio_salud),
+  AÑO = años_predichos,
+  tipo = "PREDICHO_TS",
+  valor = round(pred$pred,0)
+)
+```
+
+```{r}
+n <- nrow(ts10)       # debería ser 18
+
+# Extraer las predicciones
+pred_y <- pred$pred  # vector de longitud 3
+pred_x <- (n+1):(n + length(pred_y))  # 19, 20, 21
+
+# Gráfico base (observados)
+plot(1:n, ts10$incidencias,
+     type = "b",
+     pch = 16,
+     col = "black",
+     xlim = c(1, n + length(pred_y)),   # ← esto permite mostrar hasta 21
+     ylim = c(0, max(c(ts10$incidencias, pred_y)) * 1.2),
+     xlab = "Tiempo",
+     ylab = "Casos",
+     main = "Observado, Ajustado y Predicción")
+
+# Ajustados (in-sample)
+points(1:n, fitted(m10),
+       type = "b",
+       col = "orange",
+       pch = 16)
+
+# Predicciones
+points(pred_x, pred_y,
+       type = "b",
+       col = "blue",
+       pch = 17)
+
+legend("topleft",
+       legend = c("Observado", "Ajustado", "Predicho"),
+       col = c("black", "orange", "blue"),
+       pch = c(16, 16, 17),
+       bty = "n")
+```
+
+### resumen de datos
+
+```{r}
+ts10_long <- ts10 %>% 
+  dplyr::select(Servicio_salud, AÑO, incidencias, fitted) %>% 
+  pivot_longer(
+    cols =c(incidencias, fitted),
+    names_to = "tipo",
+    values_to = "valor") %>%
+  mutate(
+    tipo = case_when(
+      tipo == "incidencias" ~ "OBSERVADO",
+      tipo == "fitted" ~ "AJUSTADO"
+    )
+  )
+
+ts10_long2 <- bind_rows(ts10_long, pred_df)
+```
+
+## 11. Arauco
+
+```{r}
+## set de datos
+ts11 <- ts_data %>% 
+  filter(Servicio_salud == "Servicio de Salud Arauco")
+plot(x= ts11$incidencias)
+```
+
+```{r}
+m11 <- tscount::tsglm(
+  ts = ts11$incidencias,                       
+  model = list(past_obs = NULL),              
+  distr = "poisson")
+summary(m11)
+
+ts11$fitted <- round(fitted(m11), 0)
+
+ts11 <- ts11 %>% 
+  mutate(error = incidencias - fitted)
+
+(mape_ts11 <- mean(abs((ts11$incidencias - ts11$fitted) / ts11$incidencias), na.rm = T) * 100 )
+
+```
+
+#### Gráfico de residuos
+
+```{r}
+layout(t(matrix(c(1,1,1,1,2,2,3,3),ncol=2))) ## matriz para gráficos
+## residuos pearson
+plot(residuals(m11,type="pearson"), type="b", col=NULL, xlab="AÑO", ylab="Residuals", ylim=c(-3,7), pch=16, cex.lab=1.5, cex.axis=1.5)
+points(residuals(m11,type="pearson"),type="b")
+## funcion de autocorrelación
+acf(residuals(m11,type="pearson"))
+## funcion autocorrelacion parcial
+pacf(residuals(m11,type="pearson"))
+```
+
+```{r fig.width= 15, fig.height=7}
+## casos cancer obs
+plot(ts11$incidencias, type="b", col=NULL, xlab="AÑOS", ylab="Casos CG", pch=16, cex.lab=1.5, cex.axis=1.5)
+points(ts11$incidencias, type="b", col="black",pch=16)
+## casos cancer ajustados
+points(fitted(m11), type="b",col="orange",pch=16)
+```
+
+## Predicción
+
+```{r}
+pred <- predict(m11, n.ahead = 3)
+ultimo_año <- max(ts11$AÑO)
+
+# Años futuros
+años_predichos <- ultimo_año + seq_len(length(pred$pred))
+
+# Data frame de predicciones
+pred_df <- data.frame(
+  Servicio_salud = unique(ts11$Servicio_salud),
+  AÑO = años_predichos,
+  tipo = "PREDICHO_TS",
+  valor = round(pred$pred,0)
+)
+```
+
+```{r}
+n <- nrow(ts11)       # debería ser 18
+
+# Extraer las predicciones
+pred_y <- pred$pred  # vector de longitud 3
+pred_x <- (n+1):(n + length(pred_y))  # 19, 20, 21
+
+# Gráfico base (observados)
+plot(1:n, ts11$incidencias,
+     type = "b",
+     pch = 16,
+     col = "black",
+     xlim = c(1, n + length(pred_y)),   # ← esto permite mostrar hasta 21
+     ylim = c(0, max(c(ts11$incidencias, pred_y)) * 1.2),
+     xlab = "Tiempo",
+     ylab = "Casos",
+     main = "Observado, Ajustado y Predicción")
+
+# Ajustados (in-sample)
+points(1:n, fitted(m11),
+       type = "b",
+       col = "orange",
+       pch = 16)
+
+# Predicciones
+points(pred_x, pred_y,
+       type = "b",
+       col = "blue",
+       pch = 17)
+
+legend("topleft",
+       legend = c("Observado", "Ajustado", "Predicho"),
+       col = c("black", "orange", "blue"),
+       pch = c(16, 16, 17),
+       bty = "n")
+```
+
+### resumen de datos
+
+```{r}
+ts11_long <- ts11 %>% 
+  dplyr::select(Servicio_salud, AÑO, incidencias, fitted) %>% 
+  pivot_longer(
+    cols =c(incidencias, fitted),
+    names_to = "tipo",
+    values_to = "valor") %>%
+  mutate(
+    tipo = case_when(
+      tipo == "incidencias" ~ "OBSERVADO",
+      tipo == "fitted" ~ "AJUSTADO"
+    )
+  )
+
+ts11_long2 <- bind_rows(ts11_long, pred_df)
+```
+
+## 12. Atacama
+
+```{r}
+## set de datos
+ts12 <- ts_data %>% 
+  filter(Servicio_salud == "Servicio de Salud Atacama")
+plot(x= ts12$incidencias)
+```
+
+```{r}
+m12 <- tscount::tsglm(
+  ts = ts12$incidencias,                       
+  model = list(past_obs = NULL),              
+  distr = "poisson")
+summary(m12)
+
+ts12$fitted <- round(fitted(m12), 0)
+
+ts12 <- ts12 %>% 
+  mutate(error = incidencias - fitted)
+
+(mape_ts12 <- mean(abs((ts12$incidencias - ts12$fitted) / ts12$incidencias), na.rm = T) * 100 )
+
+```
+
+#### Gráfico de residuos
+
+```{r}
+layout(t(matrix(c(1,1,1,1,2,2,3,3),ncol=2))) ## matriz para gráficos
+## residuos pearson
+plot(residuals(m12,type="pearson"), type="b", col=NULL, xlab="AÑO", ylab="Residuals", ylim=c(-3,7), pch=16, cex.lab=1.5, cex.axis=1.5)
+points(residuals(m12,type="pearson"),type="b")
+## funcion de autocorrelación
+acf(residuals(m12,type="pearson"))
+## funcion autocorrelacion parcial
+pacf(residuals(m12,type="pearson"))
+```
+
+```{r fig.width= 15, fig.height=7}
+## casos cancer obs
+plot(ts12$incidencias, type="b", col=NULL, xlab="AÑOS", ylab="Casos CG", pch=16, cex.lab=1.5, cex.axis=1.5)
+points(ts12$incidencias, type="b", col="black",pch=16)
+## casos cancer ajustados
+points(fitted(m12), type="b",col="orange",pch=16)
+```
+
+## Predicción
+
+```{r}
+pred <- predict(m12, n.ahead = 3)
+ultimo_año <- max(ts12$AÑO)
+
+# Años futuros
+años_predichos <- ultimo_año + seq_len(length(pred$pred))
+
+# Data frame de predicciones
+pred_df <- data.frame(
+  Servicio_salud = unique(ts12$Servicio_salud),
+  AÑO = años_predichos,
+  tipo = "PREDICHO_TS",
+  valor = round(pred$pred,0)
+)
+```
+
+```{r}
+n <- nrow(ts12)       # debería ser 18
+
+# Extraer las predicciones
+pred_y <- pred$pred  # vector de longitud 3
+pred_x <- (n+1):(n + length(pred_y))  # 19, 20, 21
+
+# Gráfico base (observados)
+plot(1:n, ts12$incidencias,
+     type = "b",
+     pch = 16,
+     col = "black",
+     xlim = c(1, n + length(pred_y)),   # ← esto permite mostrar hasta 21
+     ylim = c(0, max(c(ts12$incidencias, pred_y)) * 1.2),
+     xlab = "Tiempo",
+     ylab = "Casos",
+     main = "Observado, Ajustado y Predicción")
+
+# Ajustados (in-sample)
+points(1:n, fitted(m12),
+       type = "b",
+       col = "orange",
+       pch = 16)
+
+# Predicciones
+points(pred_x, pred_y,
+       type = "b",
+       col = "blue",
+       pch = 17)
+
+legend("topleft",
+       legend = c("Observado", "Ajustado", "Predicho"),
+       col = c("black", "orange", "blue"),
+       pch = c(16, 16, 17),
+       bty = "n")
+```
+
+### resumen de datos
+
+```{r}
+ts12_long <- ts12 %>% 
+  dplyr::select(Servicio_salud, AÑO, incidencias, fitted) %>% 
+  pivot_longer(
+    cols =c(incidencias, fitted),
+    names_to = "tipo",
+    values_to = "valor") %>%
+  mutate(
+    tipo = case_when(
+      tipo == "incidencias" ~ "OBSERVADO",
+      tipo == "fitted" ~ "AJUSTADO"
+    )
+  )
+
+ts12_long2 <- bind_rows(ts12_long, pred_df)
+```
+
+## 13. Aysen
+
+```{r}
+## set de datos
+ts13 <- ts_data %>% 
+  filter(Servicio_salud == "Servicio de Salud Aysén")
+plot(x= ts13$incidencias)
+```
+
+```{r}
+m13 <- tscount::tsglm(
+  ts = ts13$incidencias,                       
+  model = list(past_obs = NULL, past_mean = NULL),              
+  distr = "poisson")
+summary(m13)
+
+ts13$fitted <- round(fitted(m13), 0)
+
+ts13 <- ts13 %>% 
+  mutate(error = incidencias - fitted)
+
+(mape_ts13 <- mean(abs((ts13$incidencias - ts13$fitted) / ts13$incidencias), na.rm = T) * 100 )
+
+```
+
+#### Gráfico de residuos
+
+```{r}
+layout(t(matrix(c(1,1,1,1,2,2,3,3),ncol=2))) ## matriz para gráficos
+## residuos pearson
+plot(residuals(m13,type="pearson"), type="b", col=NULL, xlab="AÑO", ylab="Residuals", ylim=c(-3,7), pch=16, cex.lab=1.5, cex.axis=1.5)
+points(residuals(m13,type="pearson"),type="b")
+## funcion de autocorrelación
+acf(residuals(m13,type="pearson"))
+## funcion autocorrelacion parcial
+pacf(residuals(m13,type="pearson"))
+```
+
+```{r fig.width= 15, fig.height=7}
+## casos cancer obs
+plot(ts13$incidencias, type="b", col=NULL, xlab="AÑOS", ylab="Casos CG", pch=16, cex.lab=1.5, cex.axis=1.5)
+points(ts13$incidencias, type="b", col="black",pch=16)
+## casos cancer ajustados
+points(fitted(m13), type="b",col="orange",pch=16)
+```
+
+## Predicción
+
+```{r}
+pred <- predict(m13, n.ahead = 3)
+ultimo_año <- max(ts13$AÑO)
+
+# Años futuros
+años_predichos <- ultimo_año + seq_len(length(pred$pred))
+
+# Data frame de predicciones
+pred_df <- data.frame(
+  Servicio_salud = unique(ts13$Servicio_salud),
+  AÑO = años_predichos,
+  tipo = "PREDICHO_TS",
+  valor = round(pred$pred,0)
+)
+```
+
+```{r}
+n <- nrow(ts13)       # debería ser 18
+
+# Extraer las predicciones
+pred_y <- pred$pred  # vector de longitud 3
+pred_x <- (n+1):(n + length(pred_y))  # 19, 20, 21
+
+# Gráfico base (observados)
+plot(1:n, ts13$incidencias,
+     type = "b",
+     pch = 16,
+     col = "black",
+     xlim = c(1, n + length(pred_y)),   # ← esto permite mostrar hasta 21
+     ylim = c(0, max(c(ts13$incidencias, pred_y)) * 1.2),
+     xlab = "Tiempo",
+     ylab = "Casos",
+     main = "Observado, Ajustado y Predicción")
+
+# Ajustados (in-sample)
+points(1:n, fitted(m13),
+       type = "b",
+       col = "orange",
+       pch = 16)
+
+# Predicciones
+points(pred_x, pred_y,
+       type = "b",
+       col = "blue",
+       pch = 17)
+
+legend("topleft",
+       legend = c("Observado", "Ajustado", "Predicho"),
+       col = c("black", "orange", "blue"),
+       pch = c(16, 16, 17),
+       bty = "n")
+```
+
+### resumen de datos
+
+```{r}
+ts13_long <- ts13 %>% 
+  dplyr::select(Servicio_salud, AÑO, incidencias, fitted) %>% 
+  pivot_longer(
+    cols =c(incidencias, fitted),
+    names_to = "tipo",
+    values_to = "valor") %>%
+  mutate(
+    tipo = case_when(
+      tipo == "incidencias" ~ "OBSERVADO",
+      tipo == "fitted" ~ "AJUSTADO"
+    )
+  )
+
+ts13_long2 <- bind_rows(ts13_long, pred_df)
+```
+
+## 14. Chiloé
+
+```{r}
+## set de datos
+ts14 <- ts_data %>% 
+  filter(Servicio_salud == "Servicio de Salud Chiloé")
+plot(x= ts14$incidencias)
+```
+
+```{r}
+m14 <- tscount::tsglm(
+  ts = ts14$incidencias,                       
+  model = list(past_obs = NULL, past_mean = NULL),              
+  distr = "poisson")
+summary(m14)
+
+ts14$fitted <- round(fitted(m14), 0)
+
+ts14 <- ts14 %>% 
+  mutate(error = incidencias - fitted)
+
+(mape_ts14 <- mean(abs((ts14$incidencias - ts14$fitted) / ts14$incidencias), na.rm = T) * 100 )
+
+```
+
+#### Gráfico de residuos
+
+```{r}
+layout(t(matrix(c(1,1,1,1,2,2,3,3),ncol=2))) ## matriz para gráficos
+## residuos pearson
+plot(residuals(m14,type="pearson"), type="b", col=NULL, xlab="AÑO", ylab="Residuals", ylim=c(-3,7), pch=16, cex.lab=1.5, cex.axis=1.5)
+points(residuals(m14,type="pearson"),type="b")
+## funcion de autocorrelación
+acf(residuals(m14,type="pearson"))
+## funcion autocorrelacion parcial
+pacf(residuals(m14,type="pearson"))
+```
+
+```{r fig.width= 15, fig.height=7}
+## casos cancer obs
+plot(ts14$incidencias, type="b", col=NULL, xlab="AÑOS", ylab="Casos CG", pch=16, cex.lab=1.5, cex.axis=1.5)
+points(ts14$incidencias, type="b", col="black",pch=16)
+## casos cancer ajustados
+points(fitted(m14), type="b",col="orange",pch=16)
+```
+
+## Predicción
+
+```{r}
+pred <- predict(m14, n.ahead = 3)
+ultimo_año <- max(ts14$AÑO)
+
+# Años futuros
+años_predichos <- ultimo_año + seq_len(length(pred$pred))
+
+# Data frame de predicciones
+pred_df <- data.frame(
+  Servicio_salud = unique(ts14$Servicio_salud),
+  AÑO = años_predichos,
+  tipo = "PREDICHO_TS",
+  valor = round(pred$pred,0)
+)
+```
+
+```{r}
+n <- nrow(ts14)       # debería ser 18
+
+# Extraer las predicciones
+pred_y <- pred$pred  # vector de longitud 3
+pred_x <- (n+1):(n + length(pred_y))  # 19, 20, 21
+
+# Gráfico base (observados)
+plot(1:n, ts14$incidencias,
+     type = "b",
+     pch = 16,
+     col = "black",
+     xlim = c(1, n + length(pred_y)),   # ← esto permite mostrar hasta 21
+     ylim = c(0, max(c(ts14$incidencias, pred_y)) * 1.2),
+     xlab = "Tiempo",
+     ylab = "Casos",
+     main = "Observado, Ajustado y Predicción")
+
+# Ajustados (in-sample)
+points(1:n, fitted(m14),
+       type = "b",
+       col = "orange",
+       pch = 16)
+
+# Predicciones
+points(pred_x, pred_y,
+       type = "b",
+       col = "blue",
+       pch = 17)
+
+legend("topleft",
+       legend = c("Observado", "Ajustado", "Predicho"),
+       col = c("black", "orange", "blue"),
+       pch = c(16, 16, 17),
+       bty = "n")
+```
+
+### resumen de datos
+
+```{r}
+ts14_long <- ts14 %>% 
+  dplyr::select(Servicio_salud, AÑO, incidencias, fitted) %>% 
+  pivot_longer(
+    cols =c(incidencias, fitted),
+    names_to = "tipo",
+    values_to = "valor") %>%
+  mutate(
+    tipo = case_when(
+      tipo == "incidencias" ~ "OBSERVADO",
+      tipo == "fitted" ~ "AJUSTADO"
+    )
+  )
+
+ts14_long2 <- bind_rows(ts14_long, pred_df)
+```
+
+## 15. Coquimbo
+
+```{r}
+## set de datos
+ts15 <- ts_data %>% 
+  filter(Servicio_salud == "Servicio de Salud Coquimbo")
+plot(x= ts15$incidencias)
+```
+
+```{r}
+m15 <- tscount::tsglm(
+  ts = ts15$incidencias,                       
+  model = list(past_obs = NULL, past_mean = NULL),              
+  distr = "poisson")
+summary(m15)
+
+ts15$fitted <- round(fitted(m15), 0)
+
+ts15 <- ts15 %>% 
+  mutate(error = incidencias - fitted)
+
+(mape_ts15 <- mean(abs((ts15$incidencias - ts15$fitted) / ts15$incidencias), na.rm = T) * 100 )
+
+```
+
+#### Gráfico de residuos
+
+```{r}
+layout(t(matrix(c(1,1,1,1,2,2,3,3),ncol=2))) ## matriz para gráficos
+## residuos pearson
+plot(residuals(m15,type="pearson"), type="b", col=NULL, xlab="AÑO", ylab="Residuals", ylim=c(-3,7), pch=16, cex.lab=1.5, cex.axis=1.5)
+points(residuals(m15,type="pearson"),type="b")
+## funcion de autocorrelación
+acf(residuals(m15,type="pearson"))
+## funcion autocorrelacion parcial
+pacf(residuals(m15,type="pearson"))
+```
+
+```{r fig.width= 15, fig.height=7}
+## casos cancer obs
+plot(ts15$incidencias, type="b", col=NULL, xlab="AÑOS", ylab="Casos CG", pch=16, cex.lab=1.5, cex.axis=1.5)
+points(ts15$incidencias, type="b", col="black",pch=16)
+## casos cancer ajustados
+points(fitted(m15), type="b",col="orange",pch=16)
+```
+
+## Predicción
+
+```{r}
+pred <- predict(m15, n.ahead = 3)
+ultimo_año <- max(ts15$AÑO)
+
+# Años futuros
+años_predichos <- ultimo_año + seq_len(length(pred$pred))
+
+# Data frame de predicciones
+pred_df <- data.frame(
+  Servicio_salud = unique(ts15$Servicio_salud),
+  AÑO = años_predichos,
+  tipo = "PREDICHO_TS",
+  valor = round(pred$pred,0)
+)
+```
+
+```{r}
+n <- nrow(ts15)       # debería ser 18
+
+# Extraer las predicciones
+pred_y <- pred$pred  # vector de longitud 3
+pred_x <- (n+1):(n + length(pred_y))  # 19, 20, 21
+
+# Gráfico base (observados)
+plot(1:n, ts15$incidencias,
+     type = "b",
+     pch = 16,
+     col = "black",
+     xlim = c(1, n + length(pred_y)),   # ← esto permite mostrar hasta 21
+     ylim = c(0, max(c(ts15$incidencias, pred_y)) * 1.2),
+     xlab = "Tiempo",
+     ylab = "Casos",
+     main = "Observado, Ajustado y Predicción")
+
+# Ajustados (in-sample)
+points(1:n, fitted(m15),
+       type = "b",
+       col = "orange",
+       pch = 16)
+
+# Predicciones
+points(pred_x, pred_y,
+       type = "b",
+       col = "blue",
+       pch = 17)
+
+legend("topleft",
+       legend = c("Observado", "Ajustado", "Predicho"),
+       col = c("black", "orange", "blue"),
+       pch = c(16, 16, 17),
+       bty = "n")
+```
+
+### resumen de datos
+
+```{r}
+ts15_long <- ts15 %>% 
+  dplyr::select(Servicio_salud, AÑO, incidencias, fitted) %>% 
+  pivot_longer(
+    cols =c(incidencias, fitted),
+    names_to = "tipo",
+    values_to = "valor") %>%
+  mutate(
+    tipo = case_when(
+      tipo == "incidencias" ~ "OBSERVADO",
+      tipo == "fitted" ~ "AJUSTADO"
+    )
+  )
+
+ts15_long2 <- bind_rows(ts15_long, pred_df)
+```
+
+## 16. Ohiggins
+
+```{r}
+## set de datos
+ts16 <- ts_data %>% 
+  filter(Servicio_salud == "Servicio de Salud Del Libertador B.O'Higgins")
+plot(x= ts16$incidencias)
+```
+
+```{r}
+m16 <- tscount::tsglm(
+  ts = ts16$incidencias,                       
+  model = list(past_obs = NULL, past_mean = NULL),              
+  distr = "poisson")
+summary(m16)
+
+ts16$fitted <- round(fitted(m16), 0)
+
+ts16 <- ts16 %>% 
+  mutate(error = incidencias - fitted)
+
+(mape_ts16 <- mean(abs((ts16$incidencias - ts16$fitted) / ts16$incidencias), na.rm = T) * 100 )
+
+```
+
+#### Gráfico de residuos
+
+```{r}
+layout(t(matrix(c(1,1,1,1,2,2,3,3),ncol=2))) ## matriz para gráficos
+## residuos pearson
+plot(residuals(m16,type="pearson"), type="b", col=NULL, xlab="AÑO", ylab="Residuals", ylim=c(-3,7), pch=16, cex.lab=1.5, cex.axis=1.5)
+points(residuals(m16,type="pearson"),type="b")
+## funcion de autocorrelación
+acf(residuals(m16,type="pearson"))
+## funcion autocorrelacion parcial
+pacf(residuals(m16,type="pearson"))
+```
+
+```{r fig.width= 15, fig.height=7}
+## casos cancer obs
+plot(ts16$incidencias, type="b", col=NULL, xlab="AÑOS", ylab="Casos CG", pch=16, cex.lab=1.5, cex.axis=1.5)
+points(ts16$incidencias, type="b", col="black",pch=16)
+## casos cancer ajustados
+points(fitted(m16), type="b",col="orange",pch=16)
+```
+
+## Predicción
+
+```{r}
+pred <- predict(m16, n.ahead = 3)
+ultimo_año <- max(ts16$AÑO)
+
+# Años futuros
+años_predichos <- ultimo_año + seq_len(length(pred$pred))
+
+# Data frame de predicciones
+pred_df <- data.frame(
+  Servicio_salud = unique(ts16$Servicio_salud),
+  AÑO = años_predichos,
+  tipo = "PREDICHO_TS",
+  valor = round(pred$pred,0)
+)
+```
+
+```{r}
+n <- nrow(ts16)       # debería ser 18
+
+# Extraer las predicciones
+pred_y <- pred$pred  # vector de longitud 3
+pred_x <- (n+1):(n + length(pred_y))  # 19, 20, 21
+
+# Gráfico base (observados)
+plot(1:n, ts16$incidencias,
+     type = "b",
+     pch = 16,
+     col = "black",
+     xlim = c(1, n + length(pred_y)),   # ← esto permite mostrar hasta 21
+     ylim = c(0, max(c(ts16$incidencias, pred_y)) * 1.2),
+     xlab = "Tiempo",
+     ylab = "Casos",
+     main = "Observado, Ajustado y Predicción")
+
+# Ajustados (in-sample)
+points(1:n, fitted(m16),
+       type = "b",
+       col = "orange",
+       pch = 16)
+
+# Predicciones
+points(pred_x, pred_y,
+       type = "b",
+       col = "blue",
+       pch = 17)
+
+legend("topleft",
+       legend = c("Observado", "Ajustado", "Predicho"),
+       col = c("black", "orange", "blue"),
+       pch = c(16, 16, 17),
+       bty = "n")
+```
+
+### resumen de datos
+
+```{r}
+ts16_long <- ts16 %>% 
+  dplyr::select(Servicio_salud, AÑO, incidencias, fitted) %>% 
+  pivot_longer(
+    cols =c(incidencias, fitted),
+    names_to = "tipo",
+    values_to = "valor") %>%
+  mutate(
+    tipo = case_when(
+      tipo == "incidencias" ~ "OBSERVADO",
+      tipo == "fitted" ~ "AJUSTADO"
+    )
+  )
+
+ts16_long2 <- bind_rows(ts16_long, pred_df)
+```
+
+## 17. Reloncaví
+
+```{r}
+## set de datos
+ts17 <- ts_data %>% 
+  filter(Servicio_salud == "Servicio de Salud Del Reloncaví")
+plot(x= ts17$incidencias)
+```
+
+```{r}
+m17 <- tscount::tsglm(
+  ts = ts17$incidencias,                       
+  model = list(past_obs = 1, past_mean = NULL),              
+  distr = "poisson")
+summary(m17)
+
+ts17$fitted <- round(fitted(m17), 0)
+
+ts17 <- ts17 %>% 
+  mutate(error = incidencias - fitted)
+
+(mape_ts17 <- mean(abs((ts17$incidencias - ts17$fitted) / ts17$incidencias), na.rm = T) * 100 )
+
+```
+
+#### Gráfico de residuos
+
+```{r}
+layout(t(matrix(c(1,1,1,1,2,2,3,3),ncol=2))) ## matriz para gráficos
+## residuos pearson
+plot(residuals(m17,type="pearson"), type="b", col=NULL, xlab="AÑO", ylab="Residuals", ylim=c(-3,7), pch=16, cex.lab=1.5, cex.axis=1.5)
+points(residuals(m17,type="pearson"),type="b")
+## funcion de autocorrelación
+acf(residuals(m17,type="pearson"))
+## funcion autocorrelacion parcial
+pacf(residuals(m17,type="pearson"))
+```
+
+```{r fig.width= 15, fig.height=7}
+## casos cancer obs
+plot(ts17$incidencias, type="b", col=NULL, xlab="AÑOS", ylab="Casos CG", pch=16, cex.lab=1.5, cex.axis=1.5)
+points(ts17$incidencias, type="b", col="black",pch=16)
+## casos cancer ajustados
+points(fitted(m17), type="b",col="orange",pch=16)
+```
+
+## Predicción
+
+```{r}
+pred <- predict(m17, n.ahead = 3)
+ultimo_año <- max(ts17$AÑO)
+
+# Años futuros
+años_predichos <- ultimo_año + seq_len(length(pred$pred))
+
+# Data frame de predicciones
+pred_df <- data.frame(
+  Servicio_salud = unique(ts17$Servicio_salud),
+  AÑO = años_predichos,
+  tipo = "PREDICHO_TS",
+  valor = round(pred$pred,0)
+)
+```
+
+```{r}
+n <- nrow(ts17)       # debería ser 18
+
+# Extraer las predicciones
+pred_y <- pred$pred  # vector de longitud 3
+pred_x <- (n+1):(n + length(pred_y))  # 19, 20, 21
+
+# Gráfico base (observados)
+plot(1:n, ts17$incidencias,
+     type = "b",
+     pch = 16,
+     col = "black",
+     xlim = c(1, n + length(pred_y)),   # ← esto permite mostrar hasta 21
+     ylim = c(0, max(c(ts17$incidencias, pred_y)) * 1.2),
+     xlab = "Tiempo",
+     ylab = "Casos",
+     main = "Observado, Ajustado y Predicción")
+
+# Ajustados (in-sample)
+points(1:n, fitted(m17),
+       type = "b",
+       col = "orange",
+       pch = 16)
+
+# Predicciones
+points(pred_x, pred_y,
+       type = "b",
+       col = "blue",
+       pch = 17)
+
+legend("topleft",
+       legend = c("Observado", "Ajustado", "Predicho"),
+       col = c("black", "orange", "blue"),
+       pch = c(16, 16, 17),
+       bty = "n")
+```
+
+### resumen de datos
+
+```{r}
+ts17_long <- ts17 %>% 
+  dplyr::select(Servicio_salud, AÑO, incidencias, fitted) %>% 
+  pivot_longer(
+    cols =c(incidencias, fitted),
+    names_to = "tipo",
+    values_to = "valor") %>%
+  mutate(
+    tipo = case_when(
+      tipo == "incidencias" ~ "OBSERVADO",
+      tipo == "fitted" ~ "AJUSTADO"
+    )
+  )
+
+ts17_long2 <- bind_rows(ts17_long, pred_df)
+```
+
+## 18. Magallanes
+
+```{r}
+## set de datos
+ts18 <- ts_data %>% 
+  filter(Servicio_salud == "Servicio de Salud Magallanes")
+plot(x= ts18$incidencias)
+```
+
+```{r}
+m18 <- tscount::tsglm(
+  ts = ts18$incidencias,                       
+  model = list(past_obs = NULL, past_mean = NULL),              
+  distr = "poisson")
+summary(m18)
+
+ts18$fitted <- round(fitted(m18), 0)
+
+ts18 <- ts18 %>% 
+  mutate(error = incidencias - fitted)
+
+(mape_ts18 <- mean(abs((ts18$incidencias - ts18$fitted) / ts18$incidencias), na.rm = T) * 100 )
+
+```
+
+#### Gráfico de residuos
+
+```{r}
+layout(t(matrix(c(1,1,1,1,2,2,3,3),ncol=2))) ## matriz para gráficos
+## residuos pearson
+plot(residuals(m18,type="pearson"), type="b", col=NULL, xlab="AÑO", ylab="Residuals", ylim=c(-3,7), pch=16, cex.lab=1.5, cex.axis=1.5)
+points(residuals(m18,type="pearson"),type="b")
+## funcion de autocorrelación
+acf(residuals(m18,type="pearson"))
+## funcion autocorrelacion parcial
+pacf(residuals(m18,type="pearson"))
+```
+
+```{r fig.width= 15, fig.height=7}
+## casos cancer obs
+plot(ts18$incidencias, type="b", col=NULL, xlab="AÑOS", ylab="Casos CG", pch=16, cex.lab=1.5, cex.axis=1.5)
+points(ts18$incidencias, type="b", col="black",pch=16)
+## casos cancer ajustados
+points(fitted(m18), type="b",col="orange",pch=16)
+```
+
+## Predicción
+
+```{r}
+pred <- predict(m18, n.ahead = 3)
+ultimo_año <- max(ts18$AÑO)
+
+# Años futuros
+años_predichos <- ultimo_año + seq_len(length(pred$pred))
+
+# Data frame de predicciones
+pred_df <- data.frame(
+  Servicio_salud = unique(ts18$Servicio_salud),
+  AÑO = años_predichos,
+  tipo = "PREDICHO_TS",
+  valor = round(pred$pred,0)
+)
+```
+
+```{r}
+n <- nrow(ts18)       # debería ser 18
+
+# Extraer las predicciones
+pred_y <- pred$pred  # vector de longitud 3
+pred_x <- (n+1):(n + length(pred_y))  # 19, 20, 21
+
+# Gráfico base (observados)
+plot(1:n, ts18$incidencias,
+     type = "b",
+     pch = 16,
+     col = "black",
+     xlim = c(1, n + length(pred_y)),   # ← esto permite mostrar hasta 21
+     ylim = c(0, max(c(ts18$incidencias, pred_y)) * 1.2),
+     xlab = "Tiempo",
+     ylab = "Casos",
+     main = "Observado, Ajustado y Predicción")
+
+# Ajustados (in-sample)
+points(1:n, fitted(m18),
+       type = "b",
+       col = "orange",
+       pch = 16)
+
+# Predicciones
+points(pred_x, pred_y,
+       type = "b",
+       col = "blue",
+       pch = 17)
+
+legend("topleft",
+       legend = c("Observado", "Ajustado", "Predicho"),
+       col = c("black", "orange", "blue"),
+       pch = c(16, 16, 17),
+       bty = "n")
+```
+
+### resumen de datos
+
+```{r}
+ts18_long <- ts18 %>% 
+  dplyr::select(Servicio_salud, AÑO, incidencias, fitted) %>% 
+  pivot_longer(
+    cols =c(incidencias, fitted),
+    names_to = "tipo",
+    values_to = "valor") %>%
+  mutate(
+    tipo = case_when(
+      tipo == "incidencias" ~ "OBSERVADO",
+      tipo == "fitted" ~ "AJUSTADO"
+    )
+  )
+
+ts18_long2 <- bind_rows(ts18_long, pred_df)
+```
+
+## 19. SS metro central
+
+```{r}
+## set de datos
+ts19 <- ts_data %>% 
+  filter(Servicio_salud == "Servicio de Salud Metropolitano Central")
+plot(x= ts19$incidencias)
+```
+
+```{r}
+m19 <- tscount::tsglm(
+  ts = ts19$incidencias,                       
+  model = list(past_obs = 1, past_mean = NULL),              
+  distr = "poisson")
+summary(m19)
+
+ts19$fitted <- round(fitted(m19), 0)
+
+ts19 <- ts19 %>% 
+  mutate(error = incidencias - fitted)
+
+(mape_ts19 <- mean(abs((ts19$incidencias - ts19$fitted) / ts19$incidencias), na.rm = T) * 100 )
+
+```
+
+#### Gráfico de residuos
+
+```{r}
+layout(t(matrix(c(1,1,1,1,2,2,3,3),ncol=2))) ## matriz para gráficos
+## residuos pearson
+plot(residuals(m19,type="pearson"), type="b", col=NULL, xlab="AÑO", ylab="Residuals", ylim=c(-3,7), pch=16, cex.lab=1.5, cex.axis=1.5)
+points(residuals(m19,type="pearson"),type="b")
+## funcion de autocorrelación
+acf(residuals(m19,type="pearson"))
+## funcion autocorrelacion parcial
+pacf(residuals(m19,type="pearson"))
+```
+
+```{r fig.width= 15, fig.height=7}
+## casos cancer obs
+plot(ts19$incidencias, type="b", col=NULL, xlab="AÑOS", ylab="Casos CG", pch=16, cex.lab=1.5, cex.axis=1.5)
+points(ts19$incidencias, type="b", col="black",pch=16)
+## casos cancer ajustados
+points(fitted(m19), type="b",col="orange",pch=16)
+```
+
+## Predicción
+
+```{r}
+pred <- predict(m19, n.ahead = 3)
+ultimo_año <- max(ts19$AÑO)
+
+# Años futuros
+años_predichos <- ultimo_año + seq_len(length(pred$pred))
+
+# Data frame de predicciones
+pred_df <- data.frame(
+  Servicio_salud = unique(ts19$Servicio_salud),
+  AÑO = años_predichos,
+  tipo = "PREDICHO_TS",
+  valor = round(pred$pred,0)
+)
+```
+
+```{r}
+n <- nrow(ts19)       # debería ser 18
+
+# Extraer las predicciones
+pred_y <- pred$pred  # vector de longitud 3
+pred_x <- (n+1):(n + length(pred_y))  # 19, 20, 21
+
+# Gráfico base (observados)
+plot(1:n, ts19$incidencias,
+     type = "b",
+     pch = 16,
+     col = "black",
+     xlim = c(1, n + length(pred_y)),   # ← esto permite mostrar hasta 21
+     ylim = c(0, max(c(ts19$incidencias, pred_y)) * 1.2),
+     xlab = "Tiempo",
+     ylab = "Casos",
+     main = "Observado, Ajustado y Predicción")
+
+# Ajustados (in-sample)
+points(1:n, fitted(m19),
+       type = "b",
+       col = "orange",
+       pch = 16)
+
+# Predicciones
+points(pred_x, pred_y,
+       type = "b",
+       col = "blue",
+       pch = 17)
+
+legend("topleft",
+       legend = c("Observado", "Ajustado", "Predicho"),
+       col = c("black", "orange", "blue"),
+       pch = c(16, 16, 17),
+       bty = "n")
+```
+
+### resumen de datos
+
+```{r}
+ts19_long <- ts19 %>% 
+  dplyr::select(Servicio_salud, AÑO, incidencias, fitted) %>% 
+  pivot_longer(
+    cols =c(incidencias, fitted),
+    names_to = "tipo",
+    values_to = "valor") %>%
+  mutate(
+    tipo = case_when(
+      tipo == "incidencias" ~ "OBSERVADO",
+      tipo == "fitted" ~ "AJUSTADO"
+    )
+  )
+
+ts19_long2 <- bind_rows(ts19_long, pred_df)
+```
+
+## 20. SS metro norte
+
+```{r}
+## set de datos
+ts20 <- ts_data %>% 
+  filter(Servicio_salud == "Servicio de Salud Metropolitano Norte")
+plot(x= ts20$incidencias)
+```
+
+```{r}
+m20 <- tscount::tsglm(
+  ts = ts20$incidencias,                       
+  model = list(past_obs = 1, past_mean = NULL),              
+  distr = "poisson")
+summary(m20)
+
+ts20$fitted <- round(fitted(m20), 0)
+
+ts20 <- ts20 %>% 
+  mutate(error = incidencias - fitted)
+
+(mape_ts20 <- mean(abs((ts20$incidencias - ts20$fitted) / ts20$incidencias), na.rm = T) * 100 )
+
+```
+
+#### Gráfico de residuos
+
+```{r}
+layout(t(matrix(c(1,1,1,1,2,2,3,3),ncol=2))) ## matriz para gráficos
+## residuos pearson
+plot(residuals(m20,type="pearson"), type="b", col=NULL, xlab="AÑO", ylab="Residuals", ylim=c(-3,7), pch=16, cex.lab=1.5, cex.axis=1.5)
+points(residuals(m20,type="pearson"),type="b")
+## funcion de autocorrelación
+acf(residuals(m20,type="pearson"))
+## funcion autocorrelacion parcial
+pacf(residuals(m20,type="pearson"))
+```
+
+```{r fig.width= 15, fig.height=7}
+## casos cancer obs
+plot(ts20$incidencias, type="b", col=NULL, xlab="AÑOS", ylab="Casos CG", pch=16, cex.lab=1.5, cex.axis=1.5)
+points(ts20$incidencias, type="b", col="black",pch=16)
+## casos cancer ajustados
+points(fitted(m20), type="b",col="orange",pch=16)
+```
+
+## Predicción
+
+```{r}
+pred <- predict(m20, n.ahead = 3)
+ultimo_año <- max(ts20$AÑO)
+
+# Años futuros
+años_predichos <- ultimo_año + seq_len(length(pred$pred))
+
+# Data frame de predicciones
+pred_df <- data.frame(
+  Servicio_salud = unique(ts20$Servicio_salud),
+  AÑO = años_predichos,
+  tipo = "PREDICHO_TS",
+  valor = round(pred$pred,0)
+)
+```
+
+```{r}
+n <- nrow(ts20)       # debería ser 18
+
+# Extraer las predicciones
+pred_y <- pred$pred  # vector de longitud 3
+pred_x <- (n+1):(n + length(pred_y))  # 19, 20, 21
+
+# Gráfico base (observados)
+plot(1:n, ts20$incidencias,
+     type = "b",
+     pch = 16,
+     col = "black",
+     xlim = c(1, n + length(pred_y)),   # ← esto permite mostrar hasta 21
+     ylim = c(0, max(c(ts20$incidencias, pred_y)) * 1.2),
+     xlab = "Tiempo",
+     ylab = "Casos",
+     main = "Observado, Ajustado y Predicción")
+
+# Ajustados (in-sample)
+points(1:n, fitted(m20),
+       type = "b",
+       col = "orange",
+       pch = 16)
+
+# Predicciones
+points(pred_x, pred_y,
+       type = "b",
+       col = "blue",
+       pch = 17)
+
+legend("topleft",
+       legend = c("Observado", "Ajustado", "Predicho"),
+       col = c("black", "orange", "blue"),
+       pch = c(16, 16, 17),
+       bty = "n")
+```
+
+### resumen de datos
+
+```{r}
+ts20_long <- ts20 %>% 
+  dplyr::select(Servicio_salud, AÑO, incidencias, fitted) %>% 
+  pivot_longer(
+    cols =c(incidencias, fitted),
+    names_to = "tipo",
+    values_to = "valor") %>%
+  mutate(
+    tipo = case_when(
+      tipo == "incidencias" ~ "OBSERVADO",
+      tipo == "fitted" ~ "AJUSTADO"
+    )
+  )
+
+ts20_long2 <- bind_rows(ts20_long, pred_df)
+```
+
+## 21. SS metro occidente
+
+```{r}
+## set de datos
+ts21 <- ts_data %>% 
+  filter(Servicio_salud == "Servicio de Salud Metropolitano Occidente")
+plot(x= ts21$incidencias)
+```
+
+```{r}
+m21 <- tscount::tsglm(
+  ts = ts21$incidencias,                       
+  model = list(past_obs = 1, past_mean = NULL),              
+  distr = "poisson")
+summary(m21)
+
+ts21$fitted <- round(fitted(m21), 0)
+
+ts21 <- ts21 %>% 
+  mutate(error = incidencias - fitted)
+
+(mape_ts21 <- mean(abs((ts21$incidencias - ts21$fitted) / ts21$incidencias), na.rm = T) * 100 )
+
+```
+
+#### Gráfico de residuos
+
+```{r}
+layout(t(matrix(c(1,1,1,1,2,2,3,3),ncol=2))) ## matriz para gráficos
+## residuos pearson
+plot(residuals(m21,type="pearson"), type="b", col=NULL, xlab="AÑO", ylab="Residuals", ylim=c(-3,7), pch=16, cex.lab=1.5, cex.axis=1.5)
+points(residuals(m21,type="pearson"),type="b")
+## funcion de autocorrelación
+acf(residuals(m21,type="pearson"))
+## funcion autocorrelacion parcial
+pacf(residuals(m21,type="pearson"))
+```
+
+```{r fig.width= 15, fig.height=7}
+## casos cancer obs
+plot(ts21$incidencias, type="b", col=NULL, xlab="AÑOS", ylab="Casos CG", pch=16, cex.lab=1.5, cex.axis=1.5)
+points(ts21$incidencias, type="b", col="black",pch=16)
+## casos cancer ajustados
+points(fitted(m21), type="b",col="orange",pch=16)
+```
+
+## Predicción
+
+```{r}
+pred <- predict(m21, n.ahead = 3)
+ultimo_año <- max(ts21$AÑO)
+
+# Años futuros
+años_predichos <- ultimo_año + seq_len(length(pred$pred))
+
+# Data frame de predicciones
+pred_df <- data.frame(
+  Servicio_salud = unique(ts21$Servicio_salud),
+  AÑO = años_predichos,
+  tipo = "PREDICHO_TS",
+  valor = round(pred$pred,0)
+)
+```
+
+```{r}
+n <- nrow(ts21)       # debería ser 18
+
+# Extraer las predicciones
+pred_y <- pred$pred  # vector de longitud 3
+pred_x <- (n+1):(n + length(pred_y))  # 19, 20, 21
+
+# Gráfico base (observados)
+plot(1:n, ts21$incidencias,
+     type = "b",
+     pch = 16,
+     col = "black",
+     xlim = c(1, n + length(pred_y)),   # ← esto permite mostrar hasta 21
+     ylim = c(0, max(c(ts21$incidencias, pred_y)) * 1.2),
+     xlab = "Tiempo",
+     ylab = "Casos",
+     main = "Observado, Ajustado y Predicción")
+
+# Ajustados (in-sample)
+points(1:n, fitted(m21),
+       type = "b",
+       col = "orange",
+       pch = 16)
+
+# Predicciones
+points(pred_x, pred_y,
+       type = "b",
+       col = "blue",
+       pch = 17)
+
+legend("topleft",
+       legend = c("Observado", "Ajustado", "Predicho"),
+       col = c("black", "orange", "blue"),
+       pch = c(16, 16, 17),
+       bty = "n")
+```
+
+### resumen de datos
+
+```{r}
+ts21_long <- ts21 %>% 
+  dplyr::select(Servicio_salud, AÑO, incidencias, fitted) %>% 
+  pivot_longer(
+    cols =c(incidencias, fitted),
+    names_to = "tipo",
+    values_to = "valor") %>%
+  mutate(
+    tipo = case_when(
+      tipo == "incidencias" ~ "OBSERVADO",
+      tipo == "fitted" ~ "AJUSTADO"
+    )
+  )
+
+ts21_long2 <- bind_rows(ts21_long, pred_df)
+```
+
+## 22. SS metro oriente
+
+```{r}
+## set de datos
+ts22 <- ts_data %>% 
+  filter(Servicio_salud == "Servicio de Salud Metropolitano Oriente")
+plot(x= ts22$incidencias)
+```
+
+```{r}
+m22 <- tscount::tsglm(
+  ts = ts22$incidencias,                       
+  model = list(past_obs = 1, past_mean = NULL),              
+  distr = "poisson")
+summary(m22)
+
+ts22$fitted <- round(fitted(m22), 0)
+
+ts22 <- ts22 %>% 
+  mutate(error = incidencias - fitted)
+
+(mape_ts22 <- mean(abs((ts22$incidencias - ts22$fitted) / ts22$incidencias), na.rm = T) * 100 )
+
+```
+
+#### Gráfico de residuos
+
+```{r}
+layout(t(matrix(c(1,1,1,1,2,2,3,3),ncol=2))) ## matriz para gráficos
+## residuos pearson
+plot(residuals(m22,type="pearson"), type="b", col=NULL, xlab="AÑO", ylab="Residuals", ylim=c(-3,7), pch=16, cex.lab=1.5, cex.axis=1.5)
+points(residuals(m22,type="pearson"),type="b")
+## funcion de autocorrelación
+acf(residuals(m22,type="pearson"))
+## funcion autocorrelacion parcial
+pacf(residuals(m22,type="pearson"))
+```
+
+```{r fig.width= 15, fig.height=7}
+## casos cancer obs
+plot(ts22$incidencias, type="b", col=NULL, xlab="AÑOS", ylab="Casos CG", pch=16, cex.lab=1.5, cex.axis=1.5)
+points(ts22$incidencias, type="b", col="black",pch=16)
+## casos cancer ajustados
+points(fitted(m22), type="b",col="orange",pch=16)
+```
+
+## Predicción
+
+```{r}
+pred <- predict(m22, n.ahead = 3)
+ultimo_año <- max(ts22$AÑO)
+
+# Años futuros
+años_predichos <- ultimo_año + seq_len(length(pred$pred))
+
+# Data frame de predicciones
+pred_df <- data.frame(
+  Servicio_salud = unique(ts22$Servicio_salud),
+  AÑO = años_predichos,
+  tipo = "PREDICHO_TS",
+  valor = round(pred$pred,0)
+)
+```
+
+```{r}
+n <- nrow(ts22)       # debería ser 18
+
+# Extraer las predicciones
+pred_y <- pred$pred  # vector de longitud 3
+pred_x <- (n+1):(n + length(pred_y))  # 19, 20, 21
+
+# Gráfico base (observados)
+plot(1:n, ts22$incidencias,
+     type = "b",
+     pch = 16,
+     col = "black",
+     xlim = c(1, n + length(pred_y)),   # ← esto permite mostrar hasta 21
+     ylim = c(0, max(c(ts22$incidencias, pred_y)) * 1.2),
+     xlab = "Tiempo",
+     ylab = "Casos",
+     main = "Observado, Ajustado y Predicción")
+
+# Ajustados (in-sample)
+points(1:n, fitted(m22),
+       type = "b",
+       col = "orange",
+       pch = 16)
+
+# Predicciones
+points(pred_x, pred_y,
+       type = "b",
+       col = "blue",
+       pch = 17)
+
+legend("topleft",
+       legend = c("Observado", "Ajustado", "Predicho"),
+       col = c("black", "orange", "blue"),
+       pch = c(16, 16, 17),
+       bty = "n")
+```
+
+### resumen de datos
+
+```{r}
+ts22_long <- ts22 %>% 
+  dplyr::select(Servicio_salud, AÑO, incidencias, fitted) %>% 
+  pivot_longer(
+    cols =c(incidencias, fitted),
+    names_to = "tipo",
+    values_to = "valor") %>%
+  mutate(
+    tipo = case_when(
+      tipo == "incidencias" ~ "OBSERVADO",
+      tipo == "fitted" ~ "AJUSTADO"
+    )
+  )
+
+ts22_long2 <- bind_rows(ts22_long, pred_df)
+```
+
+## 23. SS metro sur
+
+```{r}
+## set de datos
+ts23 <- ts_data %>% 
+  filter(Servicio_salud == "Servicio de Salud Metropolitano Sur")
+plot(x= ts23$incidencias)
+```
+
+```{r}
+m23 <- tscount::tsglm(
+  ts = ts23$incidencias,                       
+  model = list(past_obs = 1, past_mean = NULL),              
+  distr = "poisson")
+summary(m23)
+
+ts23$fitted <- round(fitted(m23), 0)
+
+ts23 <- ts23 %>% 
+  mutate(error = incidencias - fitted)
+
+(mape_ts23 <- mean(abs((ts23$incidencias - ts23$fitted) / ts23$incidencias), na.rm = T) * 100 )
+
+```
+
+#### Gráfico de residuos
+
+```{r}
+layout(t(matrix(c(1,1,1,1,2,2,3,3),ncol=2))) ## matriz para gráficos
+## residuos pearson
+plot(residuals(m23,type="pearson"), type="b", col=NULL, xlab="AÑO", ylab="Residuals", ylim=c(-3,7), pch=16, cex.lab=1.5, cex.axis=1.5)
+points(residuals(m23,type="pearson"),type="b")
+## funcion de autocorrelación
+acf(residuals(m23,type="pearson"))
+## funcion autocorrelacion parcial
+pacf(residuals(m23,type="pearson"))
+```
+
+```{r fig.width= 15, fig.height=7}
+## casos cancer obs
+plot(ts23$incidencias, type="b", col=NULL, xlab="AÑOS", ylab="Casos CG", pch=16, cex.lab=1.5, cex.axis=1.5)
+points(ts23$incidencias, type="b", col="black",pch=16)
+## casos cancer ajustados
+points(fitted(m23), type="b",col="orange",pch=16)
+```
+
+## Predicción
+
+```{r}
+pred <- predict(m23, n.ahead = 3)
+ultimo_año <- max(ts23$AÑO)
+
+# Años futuros
+años_predichos <- ultimo_año + seq_len(length(pred$pred))
+
+# Data frame de predicciones
+pred_df <- data.frame(
+  Servicio_salud = unique(ts23$Servicio_salud),
+  AÑO = años_predichos,
+  tipo = "PREDICHO_TS",
+  valor = round(pred$pred,0)
+)
+```
+
+```{r}
+n <- nrow(ts23)       # debería ser 18
+
+# Extraer las predicciones
+pred_y <- pred$pred  # vector de longitud 3
+pred_x <- (n+1):(n + length(pred_y))  # 19, 20, 21
+
+# Gráfico base (observados)
+plot(1:n, ts23$incidencias,
+     type = "b",
+     pch = 16,
+     col = "black",
+     xlim = c(1, n + length(pred_y)),   # ← esto permite mostrar hasta 21
+     ylim = c(0, max(c(ts23$incidencias, pred_y)) * 1.2),
+     xlab = "Tiempo",
+     ylab = "Casos",
+     main = "Observado, Ajustado y Predicción")
+
+# Ajustados (in-sample)
+points(1:n, fitted(m23),
+       type = "b",
+       col = "orange",
+       pch = 16)
+
+# Predicciones
+points(pred_x, pred_y,
+       type = "b",
+       col = "blue",
+       pch = 17)
+
+legend("topleft",
+       legend = c("Observado", "Ajustado", "Predicho"),
+       col = c("black", "orange", "blue"),
+       pch = c(16, 16, 17),
+       bty = "n")
+```
+
+### resumen de datos
+
+```{r}
+ts23_long <- ts23 %>% 
+  dplyr::select(Servicio_salud, AÑO, incidencias, fitted) %>% 
+  pivot_longer(
+    cols =c(incidencias, fitted),
+    names_to = "tipo",
+    values_to = "valor") %>%
+  mutate(
+    tipo = case_when(
+      tipo == "incidencias" ~ "OBSERVADO",
+      tipo == "fitted" ~ "AJUSTADO"
+    )
+  )
+
+ts23_long2 <- bind_rows(ts23_long, pred_df)
+```
+
+## 24. SS metro sur oriente
+
+```{r}
+## set de datos
+ts24 <- ts_data %>% 
+  filter(Servicio_salud == "Servicio de Salud Metropolitano Sur Oriente")
+plot(x= ts24$incidencias)
+```
+
+```{r}
+m24 <- tscount::tsglm(
+  ts = ts24$incidencias,                       
+  model = list(past_obs = NULL, past_mean = NULL),              
+  distr = "poisson")
+summary(m24)
+
+ts24$fitted <- round(fitted(m24), 0)
+
+ts24 <- ts24 %>% 
+  mutate(error = incidencias - fitted)
+
+(mape_ts24 <- mean(abs((ts24$incidencias - ts24$fitted) / ts24$incidencias), na.rm = T) * 100 )
+
+```
+
+#### Gráfico de residuos
+
+```{r}
+layout(t(matrix(c(1,1,1,1,2,2,3,3),ncol=2))) ## matriz para gráficos
+## residuos pearson
+plot(residuals(m24,type="pearson"), type="b", col=NULL, xlab="AÑO", ylab="Residuals", ylim=c(-3,7), pch=16, cex.lab=1.5, cex.axis=1.5)
+points(residuals(m24,type="pearson"),type="b")
+## funcion de autocorrelación
+acf(residuals(m24,type="pearson"))
+## funcion autocorrelacion parcial
+pacf(residuals(m24,type="pearson"))
+```
+
+```{r fig.width= 15, fig.height=7}
+## casos cancer obs
+plot(ts24$incidencias, type="b", col=NULL, xlab="AÑOS", ylab="Casos CG", pch=16, cex.lab=1.5, cex.axis=1.5)
+points(ts24$incidencias, type="b", col="black",pch=16)
+## casos cancer ajustados
+points(fitted(m24), type="b",col="orange",pch=16)
+```
+
+## Predicción
+
+```{r}
+pred <- predict(m24, n.ahead = 3)
+ultimo_año <- max(ts24$AÑO)
+
+# Años futuros
+años_predichos <- ultimo_año + seq_len(length(pred$pred))
+
+# Data frame de predicciones
+pred_df <- data.frame(
+  Servicio_salud = unique(ts24$Servicio_salud),
+  AÑO = años_predichos,
+  tipo = "PREDICHO_TS",
+  valor = round(pred$pred,0)
+)
+```
+
+```{r}
+n <- nrow(ts24)       # debería ser 18
+
+# Extraer las predicciones
+pred_y <- pred$pred  # vector de longitud 3
+pred_x <- (n+1):(n + length(pred_y))  # 19, 20, 21
+
+# Gráfico base (observados)
+plot(1:n, ts24$incidencias,
+     type = "b",
+     pch = 16,
+     col = "black",
+     xlim = c(1, n + length(pred_y)),   # ← esto permite mostrar hasta 21
+     ylim = c(0, max(c(ts24$incidencias, pred_y)) * 1.2),
+     xlab = "Tiempo",
+     ylab = "Casos",
+     main = "Observado, Ajustado y Predicción")
+
+# Ajustados (in-sample)
+points(1:n, fitted(m24),
+       type = "b",
+       col = "orange",
+       pch = 16)
+
+# Predicciones
+points(pred_x, pred_y,
+       type = "b",
+       col = "blue",
+       pch = 17)
+
+legend("topleft",
+       legend = c("Observado", "Ajustado", "Predicho"),
+       col = c("black", "orange", "blue"),
+       pch = c(16, 16, 17),
+       bty = "n")
+```
+
+### resumen de datos
+
+```{r}
+ts24_long <- ts24 %>% 
+  dplyr::select(Servicio_salud, AÑO, incidencias, fitted) %>% 
+  pivot_longer(
+    cols =c(incidencias, fitted),
+    names_to = "tipo",
+    values_to = "valor") %>%
+  mutate(
+    tipo = case_when(
+      tipo == "incidencias" ~ "OBSERVADO",
+      tipo == "fitted" ~ "AJUSTADO"
+    )
+  )
+
+ts24_long2 <- bind_rows(ts24_long, pred_df)
+```
+
+## 25. SS Ñuble
+
+```{r}
+## set de datos
+ts25 <- ts_data %>% 
+  filter(Servicio_salud == "Servicio de Salud Ñuble")
+plot(x= ts25$incidencias)
+```
+
+```{r}
+m25 <- tscount::tsglm(
+  ts = ts25$incidencias,                       
+  model = list(past_obs = NULL, past_mean = NULL),              
+  distr = "poisson")
+summary(m25)
+
+ts25$fitted <- round(fitted(m25), 0)
+
+ts25 <- ts25 %>% 
+  mutate(error = incidencias - fitted)
+
+(mape_ts25 <- mean(abs((ts25$incidencias - ts25$fitted) / ts25$incidencias), na.rm = T) * 100 )
+
+```
+
+#### Gráfico de residuos
+
+```{r}
+layout(t(matrix(c(1,1,1,1,2,2,3,3),ncol=2))) ## matriz para gráficos
+## residuos pearson
+plot(residuals(m25,type="pearson"), type="b", col=NULL, xlab="AÑO", ylab="Residuals", ylim=c(-3,7), pch=16, cex.lab=1.5, cex.axis=1.5)
+points(residuals(m25,type="pearson"),type="b")
+## funcion de autocorrelación
+acf(residuals(m25,type="pearson"))
+## funcion autocorrelacion parcial
+pacf(residuals(m25,type="pearson"))
+```
+
+```{r fig.width= 15, fig.height=7}
+## casos cancer obs
+plot(ts25$incidencias, type="b", col=NULL, xlab="AÑOS", ylab="Casos CG", pch=16, cex.lab=1.5, cex.axis=1.5)
+points(ts25$incidencias, type="b", col="black",pch=16)
+## casos cancer ajustados
+points(fitted(m25), type="b",col="orange",pch=16)
+```
+
+## Predicción
+
+```{r}
+pred <- predict(m25, n.ahead = 3)
+ultimo_año <- max(ts25$AÑO)
+
+# Años futuros
+años_predichos <- ultimo_año + seq_len(length(pred$pred))
+
+# Data frame de predicciones
+pred_df <- data.frame(
+  Servicio_salud = unique(ts25$Servicio_salud),
+  AÑO = años_predichos,
+  tipo = "PREDICHO_TS",
+  valor = round(pred$pred,0)
+)
+```
+
+```{r}
+n <- nrow(ts25)       # debería ser 18
+
+# Extraer las predicciones
+pred_y <- pred$pred  # vector de longitud 3
+pred_x <- (n+1):(n + length(pred_y))  # 19, 20, 21
+
+# Gráfico base (observados)
+plot(1:n, ts25$incidencias,
+     type = "b",
+     pch = 16,
+     col = "black",
+     xlim = c(1, n + length(pred_y)),   # ← esto permite mostrar hasta 21
+     ylim = c(0, max(c(ts25$incidencias, pred_y)) * 1.2),
+     xlab = "Tiempo",
+     ylab = "Casos",
+     main = "Observado, Ajustado y Predicción")
+
+# Ajustados (in-sample)
+points(1:n, fitted(m25),
+       type = "b",
+       col = "orange",
+       pch = 16)
+
+# Predicciones
+points(pred_x, pred_y,
+       type = "b",
+       col = "blue",
+       pch = 17)
+
+legend("topleft",
+       legend = c("Observado", "Ajustado", "Predicho"),
+       col = c("black", "orange", "blue"),
+       pch = c(16, 16, 17),
+       bty = "n")
+```
+
+### resumen de datos
+
+```{r}
+ts25_long <- ts25 %>% 
+  dplyr::select(Servicio_salud, AÑO, incidencias, fitted) %>% 
+  pivot_longer(
+    cols =c(incidencias, fitted),
+    names_to = "tipo",
+    values_to = "valor") %>%
+  mutate(
+    tipo = case_when(
+      tipo == "incidencias" ~ "OBSERVADO",
+      tipo == "fitted" ~ "AJUSTADO"
+    )
+  )
+
+ts25_long2 <- bind_rows(ts25_long, pred_df)
+```
+
+## 26. Osorno
+
+```{r}
+## set de datos
+ts26 <- ts_data %>% 
+  filter(Servicio_salud == "Servicio de Salud Osorno")
+plot(x= ts26$incidencias)
+```
+
+```{r}
+m26 <- tscount::tsglm(
+  ts = ts26$incidencias,                       
+  model = list(past_obs = NULL, past_mean = NULL),              
+  distr = "poisson")
+summary(m26)
+
+ts26$fitted <- round(fitted(m26), 0)
+
+ts26 <- ts26 %>% 
+  mutate(error = incidencias - fitted)
+
+(mape_ts26 <- mean(abs((ts26$incidencias - ts26$fitted) / ts26$incidencias), na.rm = T) * 100 )
+
+```
+
+#### Gráfico de residuos
+
+```{r}
+layout(t(matrix(c(1,1,1,1,2,2,3,3),ncol=2))) ## matriz para gráficos
+## residuos pearson
+plot(residuals(m26,type="pearson"), type="b", col=NULL, xlab="AÑO", ylab="Residuals", ylim=c(-3,7), pch=16, cex.lab=1.5, cex.axis=1.5)
+points(residuals(m26,type="pearson"),type="b")
+## funcion de autocorrelación
+acf(residuals(m26,type="pearson"))
+## funcion autocorrelacion parcial
+pacf(residuals(m26,type="pearson"))
+```
+
+```{r fig.width= 15, fig.height=7}
+## casos cancer obs
+plot(ts26$incidencias, type="b", col=NULL, xlab="AÑOS", ylab="Casos CG", pch=16, cex.lab=1.5, cex.axis=1.5)
+points(ts26$incidencias, type="b", col="black",pch=16)
+## casos cancer ajustados
+points(fitted(m26), type="b",col="orange",pch=16)
+```
+
+## Predicción
+
+```{r}
+pred <- predict(m26, n.ahead = 3)
+ultimo_año <- max(ts26$AÑO)
+
+# Años futuros
+años_predichos <- ultimo_año + seq_len(length(pred$pred))
+
+# Data frame de predicciones
+pred_df <- data.frame(
+  Servicio_salud = unique(ts26$Servicio_salud),
+  AÑO = años_predichos,
+  tipo = "PREDICHO_TS",
+  valor = round(pred$pred,0)
+)
+```
+
+```{r}
+n <- nrow(ts26)       # debería ser 18
+
+# Extraer las predicciones
+pred_y <- pred$pred  # vector de longitud 3
+pred_x <- (n+1):(n + length(pred_y))  # 19, 20, 21
+
+# Gráfico base (observados)
+plot(1:n, ts26$incidencias,
+     type = "b",
+     pch = 16,
+     col = "black",
+     xlim = c(1, n + length(pred_y)),   # ← esto permite mostrar hasta 21
+     ylim = c(0, max(c(ts26$incidencias, pred_y)) * 1.2),
+     xlab = "Tiempo",
+     ylab = "Casos",
+     main = "Observado, Ajustado y Predicción")
+
+# Ajustados (in-sample)
+points(1:n, fitted(m26),
+       type = "b",
+       col = "orange",
+       pch = 16)
+
+# Predicciones
+points(pred_x, pred_y,
+       type = "b",
+       col = "blue",
+       pch = 17)
+
+legend("topleft",
+       legend = c("Observado", "Ajustado", "Predicho"),
+       col = c("black", "orange", "blue"),
+       pch = c(16, 16, 17),
+       bty = "n")
+```
+
+### resumen de datos
+
+```{r}
+ts26_long <- ts26 %>% 
+  dplyr::select(Servicio_salud, AÑO, incidencias, fitted) %>% 
+  pivot_longer(
+    cols =c(incidencias, fitted),
+    names_to = "tipo",
+    values_to = "valor") %>%
+  mutate(
+    tipo = case_when(
+      tipo == "incidencias" ~ "OBSERVADO",
+      tipo == "fitted" ~ "AJUSTADO"
+    )
+  )
+
+ts26_long2 <- bind_rows(ts26_long, pred_df)
+```
+
+## 27. Tarapacá
+
+```{r}
+## set de datos
+ts27 <- ts_data %>% 
+  filter(Servicio_salud == "Servicio de Salud Tarapacá")
+plot(x= ts27$incidencias)
+```
+
+```{r}
+m27 <- tscount::tsglm(
+  ts = ts27$incidencias,                       
+  model = list(past_obs = NULL, past_mean = NULL),              
+  distr = "poisson")
+summary(m27)
+
+ts27$fitted <- round(fitted(m27), 0)
+
+ts27 <- ts27 %>% 
+  mutate(error = incidencias - fitted)
+
+(mape_ts27 <- mean(abs((ts27$incidencias - ts27$fitted) / ts27$incidencias), na.rm = T) * 100 )
+
+```
+
+#### Gráfico de residuos
+
+```{r}
+layout(t(matrix(c(1,1,1,1,2,2,3,3),ncol=2))) ## matriz para gráficos
+## residuos pearson
+plot(residuals(m27,type="pearson"), type="b", col=NULL, xlab="AÑO", ylab="Residuals", ylim=c(-3,7), pch=16, cex.lab=1.5, cex.axis=1.5)
+points(residuals(m27,type="pearson"),type="b")
+## funcion de autocorrelación
+acf(residuals(m27,type="pearson"))
+## funcion autocorrelacion parcial
+pacf(residuals(m27,type="pearson"))
+```
+
+```{r fig.width= 15, fig.height=7}
+## casos cancer obs
+plot(ts27$incidencias, type="b", col=NULL, xlab="AÑOS", ylab="Casos CG", pch=16, cex.lab=1.5, cex.axis=1.5)
+points(ts27$incidencias, type="b", col="black",pch=16)
+## casos cancer ajustados
+points(fitted(m27), type="b",col="orange",pch=16)
+```
+
+## Predicción
+
+```{r}
+pred <- predict(m27, n.ahead = 3)
+ultimo_año <- max(ts27$AÑO)
+
+# Años futuros
+años_predichos <- ultimo_año + seq_len(length(pred$pred))
+
+# Data frame de predicciones
+pred_df <- data.frame(
+  Servicio_salud = unique(ts27$Servicio_salud),
+  AÑO = años_predichos,
+  tipo = "PREDICHO_TS",
+  valor = round(pred$pred,0)
+)
+```
+
+```{r}
+n <- nrow(ts27)       # debería ser 18
+
+# Extraer las predicciones
+pred_y <- pred$pred  # vector de longitud 3
+pred_x <- (n+1):(n + length(pred_y))  # 19, 20, 21
+
+# Gráfico base (observados)
+plot(1:n, ts27$incidencias,
+     type = "b",
+     pch = 16,
+     col = "black",
+     xlim = c(1, n + length(pred_y)),   # ← esto permite mostrar hasta 21
+     ylim = c(0, max(c(ts27$incidencias, pred_y)) * 1.2),
+     xlab = "Tiempo",
+     ylab = "Casos",
+     main = "Observado, Ajustado y Predicción")
+
+# Ajustados (in-sample)
+points(1:n, fitted(m27),
+       type = "b",
+       col = "orange",
+       pch = 16)
+
+# Predicciones
+points(pred_x, pred_y,
+       type = "b",
+       col = "blue",
+       pch = 17)
+
+legend("topleft",
+       legend = c("Observado", "Ajustado", "Predicho"),
+       col = c("black", "orange", "blue"),
+       pch = c(16, 16, 17),
+       bty = "n")
+```
+
+### resumen de datos
+
+```{r}
+ts27_long <- ts27 %>% 
+  dplyr::select(Servicio_salud, AÑO, incidencias, fitted) %>% 
+  pivot_longer(
+    cols =c(incidencias, fitted),
+    names_to = "tipo",
+    values_to = "valor") %>%
+  mutate(
+    tipo = case_when(
+      tipo == "incidencias" ~ "OBSERVADO",
+      tipo == "fitted" ~ "AJUSTADO"
+    )
+  )
+
+ts27_long2 <- bind_rows(ts27_long, pred_df)
+```
+
+## 28. Valparaíso San Antonio
+
+```{r}
+## set de datos
+ts28 <- ts_data %>% 
+  filter(Servicio_salud == "Servicio de Salud Valparaíso San Antonio")
+plot(x= ts28$incidencias)
+```
+
+```{r}
+m28 <- tscount::tsglm(
+  ts = ts28$incidencias,                       
+  model = list(past_obs = NULL, past_mean = NULL),              
+  distr = "poisson")
+summary(m28)
+
+ts28$fitted <- round(fitted(m28), 0)
+
+ts28 <- ts28 %>% 
+  mutate(error = incidencias - fitted)
+
+(mape_ts28 <- mean(abs((ts28$incidencias - ts28$fitted) / ts28$incidencias), na.rm = T) * 100 )
+
+```
+
+#### Gráfico de residuos
+
+```{r}
+layout(t(matrix(c(1,1,1,1,2,2,3,3),ncol=2))) ## matriz para gráficos
+## residuos pearson
+plot(residuals(m28,type="pearson"), type="b", col=NULL, xlab="AÑO", ylab="Residuals", ylim=c(-3,7), pch=16, cex.lab=1.5, cex.axis=1.5)
+points(residuals(m28,type="pearson"),type="b")
+## funcion de autocorrelación
+acf(residuals(m28,type="pearson"))
+## funcion autocorrelacion parcial
+pacf(residuals(m28,type="pearson"))
+```
+
+```{r fig.width= 15, fig.height=7}
+## casos cancer obs
+plot(ts28$incidencias, type="b", col=NULL, xlab="AÑOS", ylab="Casos CG", pch=16, cex.lab=1.5, cex.axis=1.5)
+points(ts28$incidencias, type="b", col="black",pch=16)
+## casos cancer ajustados
+points(fitted(m28), type="b",col="orange",pch=16)
+```
+
+## Predicción
+
+```{r}
+pred <- predict(m28, n.ahead = 3)
+ultimo_año <- max(ts28$AÑO)
+
+# Años futuros
+años_predichos <- ultimo_año + seq_len(length(pred$pred))
+
+# Data frame de predicciones
+pred_df <- data.frame(
+  Servicio_salud = unique(ts28$Servicio_salud),
+  AÑO = años_predichos,
+  tipo = "PREDICHO_TS",
+  valor = round(pred$pred,0)
+)
+```
+
+```{r}
+n <- nrow(ts28)       # debería ser 18
+
+# Extraer las predicciones
+pred_y <- pred$pred  # vector de longitud 3
+pred_x <- (n+1):(n + length(pred_y))  # 19, 20, 21
+
+# Gráfico base (observados)
+plot(1:n, ts28$incidencias,
+     type = "b",
+     pch = 16,
+     col = "black",
+     xlim = c(1, n + length(pred_y)),   # ← esto permite mostrar hasta 21
+     ylim = c(0, max(c(ts28$incidencias, pred_y)) * 1.2),
+     xlab = "Tiempo",
+     ylab = "Casos",
+     main = "Observado, Ajustado y Predicción")
+
+# Ajustados (in-sample)
+points(1:n, fitted(m28),
+       type = "b",
+       col = "orange",
+       pch = 16)
+
+# Predicciones
+points(pred_x, pred_y,
+       type = "b",
+       col = "blue",
+       pch = 17)
+
+legend("topleft",
+       legend = c("Observado", "Ajustado", "Predicho"),
+       col = c("black", "orange", "blue"),
+       pch = c(16, 16, 17),
+       bty = "n")
+```
+
+### resumen de datos
+
+```{r}
+ts28_long <- ts28 %>% 
+  dplyr::select(Servicio_salud, AÑO, incidencias, fitted) %>% 
+  pivot_longer(
+    cols =c(incidencias, fitted),
+    names_to = "tipo",
+    values_to = "valor") %>%
+  mutate(
+    tipo = case_when(
+      tipo == "incidencias" ~ "OBSERVADO",
+      tipo == "fitted" ~ "AJUSTADO"
+    )
+  )
+
+ts28_long2 <- bind_rows(ts28_long, pred_df)
+```
+
+## 29. Viña del Mar
+
+```{r}
+## set de datos
+ts29 <- ts_data %>% 
+  filter(Servicio_salud == "Servicio de Salud Viña del Mar Quillota")
+plot(x= ts29$incidencias)
+```
+
+```{r}
+m29 <- tscount::tsglm(
+  ts = ts29$incidencias,                       
+  model = list(past_obs = 1, past_mean = NULL),              
+  distr = "poisson")
+summary(m29)
+
+ts29$fitted <- round(fitted(m29), 0)
+
+ts29 <- ts29 %>% 
+  mutate(error = incidencias - fitted)
+
+(mape_ts29 <- mean(abs((ts29$incidencias - ts29$fitted) / ts29$incidencias), na.rm = T) * 100 )
+
+```
+
+#### Gráfico de residuos
+
+```{r}
+layout(t(matrix(c(1,1,1,1,2,2,3,3),ncol=2))) ## matriz para gráficos
+## residuos pearson
+plot(residuals(m29,type="pearson"), type="b", col=NULL, xlab="AÑO", ylab="Residuals", ylim=c(-3,7), pch=16, cex.lab=1.5, cex.axis=1.5)
+points(residuals(m29,type="pearson"),type="b")
+## funcion de autocorrelación
+acf(residuals(m29,type="pearson"))
+## funcion autocorrelacion parcial
+pacf(residuals(m29,type="pearson"))
+```
+
+```{r fig.width= 15, fig.height=7}
+## casos cancer obs
+plot(ts29$incidencias, type="b", col=NULL, xlab="AÑOS", ylab="Casos CG", pch=16, cex.lab=1.5, cex.axis=1.5)
+points(ts29$incidencias, type="b", col="black",pch=16)
+## casos cancer ajustados
+points(fitted(m29), type="b",col="orange",pch=16)
+```
+
+## Predicción
+
+```{r}
+pred <- predict(m29, n.ahead = 3)
+ultimo_año <- max(ts29$AÑO)
+
+# Años futuros
+años_predichos <- ultimo_año + seq_len(length(pred$pred))
+
+# Data frame de predicciones
+pred_df <- data.frame(
+  Servicio_salud = unique(ts29$Servicio_salud),
+  AÑO = años_predichos,
+  tipo = "PREDICHO_TS",
+  valor = round(pred$pred,0)
+)
+```
+
+```{r}
+n <- nrow(ts29)       # debería ser 18
+
+# Extraer las predicciones
+pred_y <- pred$pred  # vector de longitud 3
+pred_x <- (n+1):(n + length(pred_y))  # 19, 20, 21
+
+# Gráfico base (observados)
+plot(1:n, ts29$incidencias,
+     type = "b",
+     pch = 16,
+     col = "black",
+     xlim = c(1, n + length(pred_y)),   # ← esto permite mostrar hasta 21
+     ylim = c(0, max(c(ts29$incidencias, pred_y)) * 1.2),
+     xlab = "Tiempo",
+     ylab = "Casos",
+     main = "Observado, Ajustado y Predicción")
+
+# Ajustados (in-sample)
+points(1:n, fitted(m29),
+       type = "b",
+       col = "orange",
+       pch = 16)
+
+# Predicciones
+points(pred_x, pred_y,
+       type = "b",
+       col = "blue",
+       pch = 17)
+
+legend("topleft",
+       legend = c("Observado", "Ajustado", "Predicho"),
+       col = c("black", "orange", "blue"),
+       pch = c(16, 16, 17),
+       bty = "n")
+```
+
+### resumen de datos
+
+```{r}
+ts29_long <- ts29 %>% 
+  dplyr::select(Servicio_salud, AÑO, incidencias, fitted) %>% 
+  pivot_longer(
+    cols =c(incidencias, fitted),
+    names_to = "tipo",
+    values_to = "valor") %>%
+  mutate(
+    tipo = case_when(
+      tipo == "incidencias" ~ "OBSERVADO",
+      tipo == "fitted" ~ "AJUSTADO"
+    )
+  )
+
+ts29_long2 <- bind_rows(ts29_long, pred_df)
+```
+
+## datos final
+
+```{r}
+datos_ts <- rbind(
+ts1_long2,  ts2_long2,  ts3_long2,  ts4_long2,  ts5_long2,  ts6_long2, ts7_long2,  ts8_long2,  ts9_long2,  ts10_long2, ts11_long2, ts12_long2, ts13_long2, ts14_long2, ts15_long2, ts16_long2, ts17_long2, ts18_long2, ts19_long2, ts20_long2, ts21_long2, ts22_long2, ts23_long2, ts24_long2, ts25_long2, ts26_long2, ts27_long2, ts28_long2, ts29_long2)
+```
+
+```{r}
+casos_proyectados <- casos_proyectados %>% 
+  mutate(tipo = "PREDICHO_PAC",
+         valor = casos) %>% 
+  dplyr::select(Servicio_salud, AÑO, tipo, valor)
+```
+
+```{r fig.width= 8, fig.height=15}
+datos_final <- rbind(
+  datos_ts, 
+  casos_proyectados) %>% 
+  mutate(tipo = fct_recode(tipo,
+                           "PREDICHO_TS" = "AJUSTADO"))
+
+save(datos_final, file = "datos_fina.RData")
+```
+
+```{r}
+datos_final$tipo <- factor(
+  datos_final$tipo,
+  levels = c("OBSERVADO","PREDICHO_TS", "PREDICHO_PAC"))
+
+datos_final <- datos_final %>% 
+  filter(Servicio_salud %in% c(
+    "Servicio de Salud Antofagasta",
+    "Servicio de Salud Araucanía Sur",
+    "Servicio de Salud Concepción",
+    "Servicio de Salud Del Reloncaví",
+    "Servicio de Salud Los Rios",
+    "Servicio de Salud Metropolitano Central",
+    "Servicio de Salud Metropolitano Norte",
+    "Servicio de Salud Metropolitano Occidente",
+    "Servicio de Salud Metropolitano Oriente",
+    "Servicio de Salud Metropolitano Sur",
+    "Servicio de Salud Viña del Mar Quillota",
+    "Servicio de Salud Talcahuano"
+  ))
+```
+
+
+```{r fig.width= 28, fig.height=20}
+etiqueta_df <- datos_final %>% 
+  group_by(Servicio_salud) %>% 
+  summarise(y = max(valor, na.rm = TRUE))
+
+ggplot(datos_final,
+       aes(x = AÑO, y = valor,
+           colour = tipo,
+           group = tipo,
+           linetype = tipo)) +
+  geom_line(linewidth = 1) +
+  geom_point() +
+  
+  facet_wrap(~ Servicio_salud,
+             ncol = 2,
+             scales = "free_y") +
+  geom_vline(
+    xintercept = 2019,
+    linetype = "dashed",
+    color = "black",
+    linewidth = 0.8 ) +
+  geom_text(
+    data = etiqueta_df,
+    aes(x = 2019 + 0.3, y = y),
+    label = "Forecasting",
+    inherit.aes = FALSE,
+    hjust = 0,
+    vjust = 1,
+    size = 5) +
+  
+   labs(
+    title = "Proyección de incidencias por Servicio de Salud",
+    y = "Incidencias",
+    x = "Año") +
+  
+  theme_minimal(base_size = 13) +
+  
+  guides(
+    colour = guide_legend(override.aes = list(linewidth = 2, size = 4)),
+    linetype = guide_legend(override.aes = list(linewidth = 2)))+ 
+  theme(
+    strip.background = element_rect(fill = "gray90", color = NA),
+    strip.text = element_text(face = "bold", size = 14),
+    plot.title = element_text(hjust = 0.5, size = 30, face = "bold"),
+    legend.position = "bottom",
+    legend.text = element_text(size = 27),
+    axis.title.y = element_text(size = 20),
+    legend.title = element_blank()
+  )
+
+## dejar solo las plots donde la serie si se ajustó, donde de identifco cieta correlación, luego, cuales fueron posibles de ajustar. y en estos, evaluar el ajuste y luego la predcción. Dejar los que se se ve como desplaza la serie.
+## para el ajuste es importante reportar el DTW, mape y smape.
+## historia natural de la enfermadad, un delay entre los incidentes del año X, pero que no mueren en el año X, sino en el X+1.
+```
+
+```{r}
+# calcular un error medio abtolutos obs, respecot a la modelada y respeco a la pac.
+# calcular el mpab. artículo profe sergio.
+```
